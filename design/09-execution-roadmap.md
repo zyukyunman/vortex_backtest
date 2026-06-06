@@ -41,7 +41,9 @@ depends_on: design/03-productization-plan.md, design/02-architecture-decisions.m
 ### P2/P3 · Qlib 引擎迁移 + 数据访问（ADR-1/2）← 待 Linux + 数据侧 P7
 等 `vortex_data` 的 Qlib 导出就绪后：删 backtrader、薄规则层接 Qlib `Exchange`、用 `FileStorage` 直接读盘、跑 `spike` 4 项验收 → 把 ADR-1 转 Accepted。
 
-**进展（2026-06-06，见 design/11）**：数据访问已做 **C2 分区裁剪**（按 `symbol=` 只读所需标的）；用**真实数据（20260601–05）**经当前引擎端到端回测**验证通过**（T+1 / 科创手数 / qfq / 异步 / 日级报告）。**Qlib 本机装不上**（py3.13 + macOS arm64 无 wheel）→ Qlib 真机回测放到 **Linux**（manylinux wheel）。当前自研引擎已可在真实数据上出可信日级回测。
+**进展（2026-06-06，见 design/11）**：数据访问已做 **C2 分区裁剪**（按 `symbol=` 只读所需标的）；用**真实数据（20260601–05）**经当前引擎端到端回测**验证通过**（T+1 / 科创手数 / qfq / 异步 / 日级报告）。**Qlib 本机装不上**（py3.13 + macOS arm64 无 wheel）→ Qlib 真机回测走**镜像（linux/amd64）**。当前自研引擎已可在真实数据上出可信日级回测。
+
+**Qlib 真机印证通过（2026-06-06，见 design/12）**：在 `linux/amd64` 镜像里用 pyqlib 0.9.7 对 **vortex_data 真实导出的 qlib 数据**（`qlib_smoke`）跑通 `Exchange.deal_order`（手数取整、真单成交 @ 真实价、T+1 需我们规则层锁）。**数据链路 vortex_data `export qlib` → 镜像 → qlib Exchange 已打通**；镜像/脚本：`Dockerfile.qlib` + `scripts/build-qlib-image.sh`。**下一步**：写 Qlib 后端 `replay_engine`（薄规则层接 Exchange）复用现有作业/报告/CLI → ADR-1 转 Accepted。
 
 ## 顺序理由
 
