@@ -64,36 +64,45 @@ def load_index_closes(
     *,
     data_dir: str | Path | None = None,
 ) -> dict[str, float]:
-    """返回 {ISO 日期: 收盘}。无数据/目录则返回 {}。"""
+    """返回 {ISO 日期: 收盘}。无数据/目录则返回 {}。
+
+    逐文件读取（不走 ds.dataset 统一 schema）——真实 index_daily 各分区文件 `date` 列
+    类型不一致（int32 / large_string 混存），整目录 schema 合并会报 ArrowTypeError；
+    `_to_ymd` 已兼容 int/str，逐文件读再内存过滤更稳健。数据量小（指数日线），可接受。
+    """
     base = Path(data_dir) if data_dir else index_data_dir()
     if base is None or not Path(base).exists():
         return {}
-    import pyarrow.compute as pc
-    import pyarrow.dataset as ds
+    import glob
 
-    dataset = ds.dataset(str(base), format="parquet", partitioning="hive")
-    try:
-        table = dataset.to_table(columns=["symbol", "date", "close"], filter=pc.field("symbol") == symbol)
-    except Exception:  # noqa: BLE001 - 退化为全量后内存过滤
-        table = dataset.to_table(columns=["symbol", "date", "close"])
-    syms = table.column("symbol").to_pylist()
-    dates = table.column("date").to_pylist()
-    closes = table.column("close").to_pylist()
+    import pyarrow.parquet as pq
 
     lo = _date_to_ymd(start) if start else None
     hi = _date_to_ymd(end) if end else None
+    need = {"symbol", "date", "close"}
     out: dict[str, float] = {}
-    for sym, d, c in zip(syms, dates, closes):
-        if sym != symbol or c is None:
+    for f in glob.glob(str(base) + "/**/*.parquet", recursive=True):
+        # 严格单文件读取：index_daily 按 date=YYYYMMDD 分区，pq.read_table 会展开同级分区
+        # 触发 schema 合并报错；ParquetFile 只读本文件，规避跨文件 date 类型不一致。
+        try:
+            pf = pq.ParquetFile(f)
+        except Exception:  # noqa: BLE001
             continue
-        ymd = _to_ymd(d)
-        if ymd is None:
+        names = set(pf.schema_arrow.names)
+        if not need.issubset(names):
             continue
-        if lo and ymd < lo:
-            continue
-        if hi and ymd > hi:
-            continue
-        out[_ymd_to_iso(ymd)] = float(c)
+        cols = ["symbol", "date", "close"] if "date" in names else ["symbol", "close"]
+        table = pf.read(columns=cols)
+        syms = table.column("symbol").to_pylist()
+        dates = table.column("date").to_pylist()
+        closes = table.column("close").to_pylist()
+        for sym, d, c in zip(syms, dates, closes):
+            if sym != symbol or c is None:
+                continue
+            ymd = _to_ymd(d)
+            if ymd is None or (lo and ymd < lo) or (hi and ymd > hi):
+                continue
+            out[_ymd_to_iso(ymd)] = float(c)
     return out
 
 

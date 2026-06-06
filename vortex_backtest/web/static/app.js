@@ -1,6 +1,7 @@
 (function () {
   'use strict';
-  // 前端壳：默认 mock 数据，便于与后端并行开发。把 LIVE 置 true 即走同源真实 API。
+  // 数据来源默认"自动"：优先真实 API，拿不到(无后端/报错)则回退 mock，便于壳独立运行。
+  // 强制时把 LIVE 设为 true(只用真实)或 'mock'(只用假数据)。
   var LIVE = false;
 
   var app = document.getElementById('app');
@@ -49,16 +50,44 @@
       risk_adjusted: { sharpe: 1.24, sortino: 1.68, calmar: 3.56, var_95: -0.021, omega: 1.4 },
       benchmark_relative: { excess_return: 0.051, annual_excess: 0.06, alpha: 0.062, beta: 0.86, information_ratio: 0.91, tracking_error: 0.07, up_capture: 1.05, down_capture: 0.82 },
       benchmark: { symbol: '000300.SH', available: true } },
-    rejsum: { counts: { t_plus_1_not_sellable: 5, limit_up_buy_blocked: 3, insufficient_cash: 2, invalid_lot_size: 1 }, total: 11 }
+    rejsum: { counts: { t_plus_1_not_sellable: 5, limit_up_buy_blocked: 3, insufficient_cash: 2, invalid_lot_size: 1 }, total: 11 },
+    summary: {
+      trades: [
+        { trade_date: '2026-01-06', symbol: '600000.SH', side_name: 'BUY', quantity: 1000, price: 9.32, amount: 9320, commission: 5, stamp_tax: 0, cash_after: 90675 },
+        { trade_date: '2026-01-06', symbol: '000001.SZ', side_name: 'BUY', quantity: 1000, price: 10.99, amount: 10990, commission: 5, stamp_tax: 0, cash_after: 79680 },
+        { trade_date: '2026-02-10', symbol: '000001.SZ', side_name: 'SELL', quantity: 500, price: 11.20, amount: 5600, commission: 5, stamp_tax: 6, cash_after: 85269 }
+      ],
+      rejections: [
+        { trade_date: '2026-01-06', symbol: '000001.SZ', side_name: 'SELL', quantity: 500, reason: 't_plus_1_not_sellable' },
+        { trade_date: '2026-01-20', symbol: '600000.SH', side_name: 'BUY', quantity: 1000, reason: 'limit_up_buy_blocked' },
+        { trade_date: '2026-02-03', symbol: '000001.SZ', side_name: 'BUY', quantity: 2000, reason: 'insufficient_cash' }
+      ],
+      positions: [
+        { symbol: '600000.SH', quantity: 1000, available_quantity: 1000, cost_basis: 9.33, last_price: 9.61, market_value: 9610, unrealized_pnl: 280, unrealized_pnl_ratio: 0.03 },
+        { symbol: '000001.SZ', quantity: 500, available_quantity: 500, cost_basis: 10.99, last_price: 11.35, market_value: 5675, unrealized_pnl: 180, unrealized_pnl_ratio: 0.0328 }
+      ],
+      strategies: [
+        { strategy_id: 'main-replay', total_return: 0.084, max_drawdown: -0.062, total_value: 94965, trades: [1, 2], rejections: [1] },
+        { strategy_id: 'star-replay', total_return: 0.041, max_drawdown: -0.038, total_value: 10100, trades: [], rejections: [] }
+      ]
+    }
   };
 
   function j(url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
+  // 数据来源：'live' 强制真实 API；'mock' 强制假数据；null=自动(优先真实，失败回退 mock，
+  // 便于壳脱离后端独立运行)。LIVE 仅作向后兼容别名。
+  var FORCE = LIVE === true ? 'live' : (LIVE === 'mock' ? 'mock' : null);
+  function pick(path, mockVal) {
+    if (FORCE === 'mock') return Promise.resolve(mockVal);
+    return j(path).catch(function (e) { if (FORCE === 'live') throw e; return mockVal; });
+  }
   var api = {
-    benchmarks: function () { return LIVE ? j('/benchmarks').catch(function () { return MOCK.benchmarks; }) : Promise.resolve(MOCK.benchmarks); },
-    list: function (st) { return LIVE ? j('/backtests' + (st ? '?status=' + st : '')) : Promise.resolve(MOCK.jobs); },
-    equity: function (id, bm) { return LIVE ? j('/backtests/' + id + '/equity?rebase=1' + (bm ? '&benchmark=' + bm : '')) : Promise.resolve(MOCK.equity); },
-    metrics: function (id, bm) { return LIVE ? j('/backtests/' + id + '/metrics' + (bm ? '?benchmark=' + bm : '')) : Promise.resolve(MOCK.metrics); },
-    rejsum: function (id) { return LIVE ? j('/backtests/' + id + '/rejections/summary') : Promise.resolve(MOCK.rejsum); }
+    benchmarks: function () { return pick('/benchmarks', MOCK.benchmarks); },
+    list: function (st) { return pick('/backtests' + (st ? '?status=' + st : ''), MOCK.jobs); },
+    equity: function (id, bm) { return pick('/backtests/' + id + '/equity?rebase=1' + (bm ? '&benchmark=' + bm : ''), MOCK.equity); },
+    metrics: function (id, bm) { return pick('/backtests/' + id + '/metrics' + (bm ? '?benchmark=' + bm : ''), MOCK.metrics); },
+    rejsum: function (id) { return pick('/backtests/' + id + '/rejections/summary', MOCK.rejsum); },
+    summary: function (id) { return pick('/backtests/' + id + '/summary', MOCK.summary); }
   };
 
   function badge(st, prog) {
@@ -183,21 +212,90 @@
     charts.push(ddc);
   }
 
+  function tabsHtml(id, tab) {
+    return '<div class="tabs" role="tablist">' + ['overview', 'trades', 'rejections', 'positions', 'compare'].map(function (t) {
+      return '<a class="tab ' + (t === tab ? 'on' : '') + '" role="tab" href="#/job/' + id + '/' + t + '">' + t + '</a>';
+    }).join('') + '</div>';
+  }
+
+  function tradesView(s) {
+    var rows = (s.trades || []).map(function (t) {
+      return '<tr><td class="mono">' + t.trade_date + '</td><td class="mono">' + esc(t.symbol) +
+        '</td><td class="' + (t.side_name === 'SELL' ? 'loss' : 'profit') + '">' + (t.side_name === 'SELL' ? '卖' : '买') +
+        '</td><td class="num">' + t.quantity + '</td><td class="num">' + fix(t.price) + '</td><td class="num">' + money(t.amount) +
+        '</td><td class="num">' + fix(t.commission) + '</td><td class="num">' + money(t.cash_after) + '</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="muted">无成交</td></tr>';
+    return '<div class="card"><table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th>' +
+      '<th class="num">价格</th><th class="num">金额</th><th class="num">佣金</th><th class="num">现金余额</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function rejectionsView(s) {
+    var reasons = {};
+    (s.rejections || []).forEach(function (r) { reasons[r.reason] = (reasons[r.reason] || 0) + 1; });
+    var opts = '<option value="">全部原因</option>' + Object.keys(reasons).map(function (k) {
+      return '<option value="' + esc(k) + '">' + esc(k) + ' (' + reasons[k] + ')</option>';
+    }).join('');
+    var rows = (s.rejections || []).map(function (r) {
+      return '<tr data-reason="' + esc(r.reason) + '"><td class="mono">' + r.trade_date + '</td><td class="mono">' + esc(r.symbol) +
+        '</td><td>' + (r.side_name === 'SELL' ? '卖' : '买') + '</td><td class="num">' + r.quantity + '</td><td class="warn">' + esc(r.reason) + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="muted">0 拒单 ✓ 全部通过</td></tr>';
+    return '<div class="card"><div style="margin-bottom:10px"><select id="reasonf" aria-label="按原因筛选">' + opts + '</select></div>' +
+      '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th><th>原因</th></tr></thead><tbody id="rejbody">' + rows + '</tbody></table></div>';
+  }
+
+  function wireReasonFilter() {
+    var sel = document.getElementById('reasonf');
+    if (!sel) return;
+    sel.addEventListener('change', function () {
+      var v = sel.value;
+      Array.prototype.forEach.call(document.querySelectorAll('#rejbody tr'), function (tr) {
+        tr.style.display = (!v || tr.getAttribute('data-reason') === v) ? '' : 'none';
+      });
+    });
+  }
+
+  function positionsView(s) {
+    var rows = (s.positions || []).map(function (p) {
+      return '<tr><td class="mono">' + esc(p.symbol) + '</td><td class="num">' + p.quantity + '</td><td class="num">' + p.available_quantity +
+        '</td><td class="num">' + fix(p.cost_basis) + '</td><td class="num">' + fix(p.last_price) + '</td><td class="num">' + money(p.market_value) +
+        '</td><td class="num ' + cls(p.unrealized_pnl) + '">' + money(p.unrealized_pnl) + '</td><td class="num ' + cls(p.unrealized_pnl_ratio) + '">' + pct(p.unrealized_pnl_ratio) + '</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="muted">无持仓</td></tr>';
+    return '<div class="card"><table><thead><tr><th>标的</th><th class="num">数量</th><th class="num">可卖</th><th class="num">成本</th>' +
+      '<th class="num">现价</th><th class="num">市值</th><th class="num">浮盈</th><th class="num">浮盈率</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function compareView(s) {
+    var st = s.strategies || [];
+    if (st.length <= 1) return '<div class="card muted">单策略回测，无对比。多策略时这里并列各子账户的收益/回撤/成交/拒单。</div>';
+    var rows = st.map(function (x) {
+      return '<tr><td class="mono">' + esc(x.strategy_id) + '</td><td class="num ' + cls(x.total_return) + '">' + pct(x.total_return) +
+        '</td><td class="num loss">' + pct(x.max_drawdown) + '</td><td class="num">' + money(x.total_value) +
+        '</td><td class="num">' + ((x.trades || []).length) + '</td><td class="num">' + ((x.rejections || []).length) + '</td></tr>';
+    }).join('');
+    return '<div class="card"><table><thead><tr><th>策略</th><th class="num">收益</th><th class="num">最大回撤</th>' +
+      '<th class="num">期末权益</th><th class="num">成交</th><th class="num">拒单</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
   function renderOverview(id, tab) {
     destroyCharts();
     setCrumbs([{ t: '回测历史', h: '#/' }, { t: id }]);
     var bm = state.benchmark || '';
-    Promise.all([api.equity(id, bm), api.metrics(id, bm), api.rejsum(id)]).then(function (res) {
-      var eq = res[0], m = res[1], rj = res[2];
-      var tabnames = ['overview', 'trades', 'rejections', 'positions', 'compare'];
-      var tabs = '<div class="tabs" role="tablist">' + tabnames.map(function (t) {
-        return '<a class="tab ' + (t === tab ? 'on' : '') + '" role="tab" href="#/job/' + id + '/' + t + '">' + t + '</a>';
-      }).join('') + '</div>';
-      var html = tabs;
-      if (tab === 'overview') html += kpiBlock(m) + metricsBlock(m) + chartCard() + rejCard(rj);
-      else html += '<div class="card muted">「' + tab + '」页为壳占位；真实数据接 /backtests/' + id + '/' + (tab === 'positions' ? 'positions' : tab) + '。</div>';
-      app.innerHTML = html;
-      if (tab === 'overview') { drawEquity(eq); if (srLive) srLive.textContent = '回测 ' + id + ' 概览已加载，累计收益 ' + pct((m.absolute || {}).cumulative_return) + '。'; }
+    if (tab === 'overview') {
+      Promise.all([api.equity(id, bm), api.metrics(id, bm), api.rejsum(id)]).then(function (res) {
+        var eq = res[0], m = res[1], rj = res[2];
+        app.innerHTML = tabsHtml(id, tab) + kpiBlock(m) + metricsBlock(m) + chartCard() + rejCard(rj);
+        drawEquity(eq);
+        if (srLive) srLive.textContent = '回测 ' + id + ' 概览已加载，累计收益 ' + pct((m.absolute || {}).cumulative_return) + '。';
+      });
+      return;
+    }
+    api.summary(id).then(function (s) {
+      var body = tab === 'trades' ? tradesView(s)
+        : tab === 'rejections' ? rejectionsView(s)
+          : tab === 'positions' ? positionsView(s)
+            : compareView(s);
+      app.innerHTML = tabsHtml(id, tab) + body;
+      if (tab === 'rejections') wireReasonFilter();
     });
   }
 
