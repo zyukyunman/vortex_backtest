@@ -8,6 +8,8 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .models import (
     AccountCreate,
@@ -23,6 +25,8 @@ from .models import (
     SymbolCrosswalkOut,
     TradeOut,
 )
+from . import benchmark as benchmark_mod
+from .metrics import compute_metrics
 from .store import DataStore, normalize_account, normalize_job, normalize_order
 from .symbols import crosswalk
 from .worker import JobWorker
@@ -188,8 +192,12 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     def list_backtests(
         data_store: DataStore = Depends(get_store),
         account_id: str | None = Query(default=None),
+        status: str | None = Query(default=None),
     ) -> list[dict]:
-        return [normalize_job(row) for row in data_store.list_jobs(account_id=account_id)]
+        return [
+            normalize_job(row)
+            for row in data_store.list_jobs(account_id=account_id, status=status)
+        ]
 
     @app.get("/backtests/{job_id}", response_model=BacktestJobOut)
     def get_backtest(
@@ -231,12 +239,24 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         job_id: str,
         data_store: DataStore = Depends(get_store),
         trade_date: date | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        limit: int | None = Query(default=None, ge=1),
+        offset: int = Query(default=0, ge=0),
     ) -> list[dict]:
         summary = _completed_summary_or_404(data_store, job_id)
         trades = list(summary.get("trades", []))
         if trade_date is not None:
             trade_date_text = trade_date.isoformat()
             trades = [trade for trade in trades if trade["trade_date"] == trade_date_text]
+        if symbol is not None:
+            trades = [trade for trade in trades if trade.get("symbol") == symbol]
+        if strategy_id is not None:
+            trades = [trade for trade in trades if trade.get("strategy_id") == strategy_id]
+        if offset:
+            trades = trades[offset:]
+        if limit is not None:
+            trades = trades[:limit]
         return trades
 
     @app.get("/backtests/{job_id}/rejections", response_model=list[RejectionOut])
@@ -244,17 +264,110 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         job_id: str,
         data_store: DataStore = Depends(get_store),
         trade_date: date | None = Query(default=None),
+        reason: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        limit: int | None = Query(default=None, ge=1),
+        offset: int = Query(default=0, ge=0),
     ) -> list[dict]:
         summary = _completed_summary_or_404(data_store, job_id)
         rejections = list(summary.get("rejections", []))
         if trade_date is not None:
             trade_date_text = trade_date.isoformat()
-            rejections = [
-                rejection
-                for rejection in rejections
-                if rejection["trade_date"] == trade_date_text
-            ]
+            rejections = [r for r in rejections if r["trade_date"] == trade_date_text]
+        if reason is not None:
+            rejections = [r for r in rejections if r.get("reason") == reason]
+        if strategy_id is not None:
+            rejections = [r for r in rejections if r.get("strategy_id") == strategy_id]
+        if offset:
+            rejections = rejections[offset:]
+        if limit is not None:
+            rejections = rejections[:limit]
         return rejections
+
+    @app.get("/backtests/{job_id}/rejections/summary")
+    def get_backtest_rejection_summary(
+        job_id: str,
+        data_store: DataStore = Depends(get_store),
+    ) -> dict:
+        summary = _completed_summary_or_404(data_store, job_id)
+        counts: dict[str, int] = {}
+        for rejection in summary.get("rejections", []):
+            key = str(rejection.get("reason", "unknown"))
+            counts[key] = counts.get(key, 0) + 1
+        ordered = dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+        return {"counts": ordered, "total": sum(counts.values())}
+
+    def _daily_for(summary: dict, strategy_id: str | None) -> list[dict]:
+        if strategy_id:
+            for strat in summary.get("strategies", []):
+                if strat.get("strategy_id") == strategy_id:
+                    return strat.get("daily", [])
+            raise HTTPException(status_code=404, detail="strategy not found")
+        return summary.get("daily", [])
+
+    @app.get("/backtests/{job_id}/equity")
+    def get_backtest_equity(
+        job_id: str,
+        data_store: DataStore = Depends(get_store),
+        strategy_id: str | None = Query(default=None),
+        benchmark: str | None = Query(default=None),
+        rebase: bool = Query(default=False),
+    ) -> dict:
+        """日级净值 + 回撤（仅日级）；可选基准对标（rebase 到 100 同起点）。"""
+        summary = _completed_summary_or_404(data_store, job_id)
+        job = normalize_job(_get_job_or_404(data_store, job_id))
+        daily = _daily_for(summary, strategy_id)
+        dates = [row["trade_date"] for row in daily]
+        equity = [float(row["total_value"]) for row in daily]
+        drawdown = [float(row.get("drawdown", 0.0)) for row in daily]
+        try:
+            initial_cash = float(_get_account_or_404(data_store, job["account_id"])["initial_cash"])
+        except HTTPException:
+            initial_cash = equity[0] if equity else 0.0
+        rebased = bool(rebase) or bool(benchmark)
+        result: dict = {"dates": dates, "drawdown": drawdown, "rebase": rebased}
+        if rebased and equity and equity[0]:
+            base0 = equity[0]
+            result["equity"] = [round(v / base0 * 100.0, 6) for v in equity]
+            result["baseline"] = 100.0
+        else:
+            result["equity"] = equity
+            result["baseline"] = initial_cash
+        if benchmark:
+            series = benchmark_mod.benchmark_series(benchmark, dates)
+            result["benchmark"] = {
+                "symbol": benchmark,
+                "values": series,
+                "available": series is not None,
+            }
+        return result
+
+    @app.get("/backtests/{job_id}/metrics")
+    def get_backtest_metrics(
+        job_id: str,
+        data_store: DataStore = Depends(get_store),
+        strategy_id: str | None = Query(default=None),
+        benchmark: str | None = Query(default=None),
+    ) -> dict:
+        """绩效指标（绝对 / 风险调整 / 基准相对）+ 短样本护栏。"""
+        summary = _completed_summary_or_404(data_store, job_id)
+        daily = _daily_for(summary, strategy_id)
+        values = [float(row["total_value"]) for row in daily]
+        dates = [row["trade_date"] for row in daily]
+        bench_values = None
+        bench_info = None
+        if benchmark:
+            series = benchmark_mod.benchmark_series(benchmark, dates)
+            bench_values = series
+            bench_info = {"symbol": benchmark, "available": series is not None}
+        metrics = compute_metrics(values, benchmark_values=bench_values)
+        if bench_info is not None:
+            metrics["benchmark"] = bench_info
+        return metrics
+
+    @app.get("/benchmarks")
+    def get_benchmarks() -> dict:
+        return benchmark_mod.list_benchmarks()
 
     @app.get("/accounts/{account_id}/summary", response_model=AccountSummaryOut)
     def get_latest_account_summary(
@@ -275,6 +388,15 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     ) -> list[dict]:
         summary = get_latest_account_summary(account_id, data_store)
         return summary["positions"]
+
+    # 托管只读看板（P5 壳）：/ui/ 提供静态 SPA，/ 重定向到看板。
+    web_dir = Path(__file__).resolve().parent / "web"
+    if web_dir.exists():
+        app.mount("/ui", StaticFiles(directory=str(web_dir), html=True), name="ui")
+
+        @app.get("/", include_in_schema=False)
+        def dashboard_root() -> RedirectResponse:
+            return RedirectResponse(url="/ui/")
 
     return app
 

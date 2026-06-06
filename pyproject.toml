@@ -35,6 +35,10 @@ build-backend = "setuptools.build_meta"
 # 显式声明包，避免 setuptools 把 design/ spike/ 等根目录当成待打包的包而报错
 packages = ["vortex_backtest"]
 
+[tool.setuptools.package-data]
+# 看板静态资源随包分发（wheel 内也含 web/）
+vortex_backtest = ["web/*.html", "web/static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

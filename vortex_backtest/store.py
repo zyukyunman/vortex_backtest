@@ -431,12 +431,18 @@ class DataStore:
             raise KeyError(account_id)
         return dict(row)
 
-    def list_jobs(self, account_id: str | None = None) -> list[dict[str, Any]]:
+    def list_jobs(
+        self, account_id: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
         params: list[Any] = []
-        where = ""
+        conditions: list[str] = []
         if account_id is not None:
-            where = "WHERE account_id = ?"
+            conditions.append("account_id = ?")
             params.append(account_id)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM jobs {where} ORDER BY created_at DESC", params
