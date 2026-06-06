@@ -116,10 +116,12 @@ def compute_metrics(
         sd = rets.std(ddof=1)
         if sd > 0:
             sharpe = float((rets - per_rf).mean() / sd * math.sqrt(periods_per_year))
-        downside = rets[rets < 0.0]
-        dd = math.sqrt(float((downside ** 2).mean())) if downside.size else 0.0
+        # 下行偏差 = 全样本 min(r-MAR,0) 的均方根（MAR=0，贴 empyrical 口径；
+        # 注意分母是对**所有**期取均值，而非只对下行期）。
+        downside = np.minimum(rets, 0.0)
+        dd = math.sqrt(float((downside ** 2).mean())) if n else 0.0
         if dd > 0:
-            sortino = float((rets - per_rf).mean() / dd * math.sqrt(periods_per_year))
+            sortino = float(rets.mean() / dd * math.sqrt(periods_per_year))
         if ann is not None and mdd is not None and mdd < 0:
             calmar = float(ann / abs(mdd))
         var95 = float(np.percentile(rets, 5))

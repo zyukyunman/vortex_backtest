@@ -24,6 +24,11 @@ sample = [
 spike = [
     "pyqlib>=0.9",
 ]
+crosscheck = [
+    # 仅用于单测对拍指标口径（empyrical），非运行时依赖；缺失时相关测试自动跳过
+    "empyrical-reloaded>=0.5",
+    "pytz",
+]
 [project.scripts]
 vortex-backtest = "vortex_backtest.cli:main"
 

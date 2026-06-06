@@ -9,7 +9,8 @@
   var crumbs = document.getElementById('crumbs');
   var srLive = document.getElementById('sr');
   var root = document.documentElement;
-  var state = { benchmark: '000300.SH' };
+  var state = { benchmark: '000300.SH', page: {}, reasonFilter: '', jobId: null };
+  var PAGE = 25;
   var charts = [];
 
   function applyTheme(mode) {
@@ -25,6 +26,17 @@
   function fix(x, d) { return x == null ? '—' : Number(x).toFixed(d == null ? 2 : d); }
   function cls(x) { return x == null ? '' : (x >= 0 ? 'profit' : 'loss'); }
   function arrow(x) { return x == null ? '' : (x >= 0 ? '▲ ' : '▼ '); }
+  function r2(x) { return Math.round(x * 100) / 100; }
+  function slice(arr, tab) { var p = state.page[tab] || 0; return (arr || []).slice(p * PAGE, p * PAGE + PAGE); }
+  function pager(tab, total) {
+    var pages = Math.max(1, Math.ceil(total / PAGE)), p = Math.min(state.page[tab] || 0, pages - 1);
+    if (total <= PAGE) return '';
+    var from = total ? p * PAGE + 1 : 0, to = Math.min(total, (p + 1) * PAGE);
+    return '<div class="pager" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:13px">' +
+      '<button class="pgbtn" data-tab="' + tab + '" data-d="-1"' + (p <= 0 ? ' disabled' : '') + '>‹ 上一页</button>' +
+      '<span class="muted">' + from + '–' + to + ' / ' + total + '</span>' +
+      '<button class="pgbtn" data-tab="' + tab + '" data-d="1"' + (p >= pages - 1 ? ' disabled' : '') + '>下一页 ›</button></div>';
+  }
   function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
   function cssVar(n) { return getComputedStyle(root).getPropertyValue(n).trim(); }
 
@@ -67,13 +79,16 @@
         { symbol: '000001.SZ', quantity: 500, available_quantity: 500, cost_basis: 10.99, last_price: 11.35, market_value: 5675, unrealized_pnl: 180, unrealized_pnl_ratio: 0.0328 }
       ],
       strategies: [
-        { strategy_id: 'main-replay', total_return: 0.084, max_drawdown: -0.062, total_value: 94965, trades: [1, 2], rejections: [1] },
-        { strategy_id: 'star-replay', total_return: 0.041, max_drawdown: -0.038, total_value: 10100, trades: [], rejections: [] }
+        { strategy_id: 'main-replay', total_return: 0.084, max_drawdown: -0.062, total_value: 94965, trades: [1, 2], rejections: [1],
+          daily: [{ trade_date: '2026-01-05', total_value: 100000 }, { trade_date: '2026-01-12', total_value: 101200 }, { trade_date: '2026-01-19', total_value: 99800 }, { trade_date: '2026-01-26', total_value: 103400 }, { trade_date: '2026-02-02', total_value: 105100 }, { trade_date: '2026-02-09', total_value: 104200 }, { trade_date: '2026-02-16', total_value: 106800 }, { trade_date: '2026-02-23', total_value: 108400 }] },
+        { strategy_id: 'star-replay', total_return: 0.041, max_drawdown: -0.038, total_value: 10100, trades: [], rejections: [],
+          daily: [{ trade_date: '2026-01-05', total_value: 10000 }, { trade_date: '2026-01-12', total_value: 10150 }, { trade_date: '2026-01-19', total_value: 9950 }, { trade_date: '2026-01-26', total_value: 10250 }, { trade_date: '2026-02-02', total_value: 10180 }, { trade_date: '2026-02-09', total_value: 10120 }, { trade_date: '2026-02-16', total_value: 10300 }, { trade_date: '2026-02-23', total_value: 10410 }] }
       ]
     }
   };
 
   function j(url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
+  function jp(url) { return fetch(url, { method: 'POST' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
   // 数据来源：'live' 强制真实 API；'mock' 强制假数据；null=自动(优先真实，失败回退 mock，
   // 便于壳脱离后端独立运行)。LIVE 仅作向后兼容别名。
   var FORCE = LIVE === true ? 'live' : (LIVE === 'mock' ? 'mock' : null);
@@ -87,7 +102,8 @@
     equity: function (id, bm) { return pick('/backtests/' + id + '/equity?rebase=1' + (bm ? '&benchmark=' + bm : ''), MOCK.equity); },
     metrics: function (id, bm) { return pick('/backtests/' + id + '/metrics' + (bm ? '?benchmark=' + bm : ''), MOCK.metrics); },
     rejsum: function (id) { return pick('/backtests/' + id + '/rejections/summary', MOCK.rejsum); },
-    summary: function (id) { return pick('/backtests/' + id + '/summary', MOCK.summary); }
+    summary: function (id) { return pick('/backtests/' + id + '/summary', MOCK.summary); },
+    cancel: function (id) { return FORCE === 'mock' ? Promise.resolve(null) : jp('/backtests/' + id + '/cancel'); }
   };
 
   function badge(st, prog) {
@@ -128,6 +144,7 @@
         var last = jb.status === 'failed' ? '<span class="loss">' + esc(s.error || 'failed') + '</span>' : (s.trades != null ? s.trades + ' 笔' : '');
         return '<tr class="row" data-id="' + jb.job_id + '"><td class="mono">' + jb.job_id + '</td><td>' + jb.account_id +
           '</td><td class="mono">' + jb.start_date + '→' + jb.end_date + '</td><td>' + badge(jb.status, jb.progress) +
+          ((jb.status === 'queued' || jb.status === 'running') ? ' <button class="cancelbtn" data-id="' + jb.job_id + '" style="font-size:11px;padding:2px 6px">取消</button>' : '') +
           '</td><td class="num">' + ret + '</td><td class="num">' + dd + '</td><td>' + last + '</td></tr>';
       }).join('');
       app.innerHTML = '<div class="card"><table><thead><tr><th>job_id</th><th>账户</th><th>区间</th><th>状态</th>' +
@@ -137,6 +154,13 @@
         function go() { location.hash = '#/job/' + tr.dataset.id + '/overview'; }
         tr.addEventListener('click', go);
         tr.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+      });
+      Array.prototype.forEach.call(app.querySelectorAll('.cancelbtn'), function (b) {
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (!confirm('取消该作业？')) return;
+          api.cancel(b.dataset.id).then(renderList).catch(function () { alert('取消失败（仅排队中可取消）'); });
+        });
       });
     });
   }
@@ -219,37 +243,42 @@
   }
 
   function tradesView(s) {
-    var rows = (s.trades || []).map(function (t) {
+    var all = s.trades || [];
+    var rows = slice(all, 'trades').map(function (t) {
       return '<tr><td class="mono">' + t.trade_date + '</td><td class="mono">' + esc(t.symbol) +
         '</td><td class="' + (t.side_name === 'SELL' ? 'loss' : 'profit') + '">' + (t.side_name === 'SELL' ? '卖' : '买') +
         '</td><td class="num">' + t.quantity + '</td><td class="num">' + fix(t.price) + '</td><td class="num">' + money(t.amount) +
         '</td><td class="num">' + fix(t.commission) + '</td><td class="num">' + money(t.cash_after) + '</td></tr>';
     }).join('') || '<tr><td colspan="8" class="muted">无成交</td></tr>';
     return '<div class="card"><table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th>' +
-      '<th class="num">价格</th><th class="num">金额</th><th class="num">佣金</th><th class="num">现金余额</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      '<th class="num">价格</th><th class="num">金额</th><th class="num">佣金</th><th class="num">现金余额</th></tr></thead><tbody>' + rows + '</tbody></table>' + pager('trades', all.length) + '</div>';
   }
 
   function rejectionsView(s) {
+    var all0 = s.rejections || [];
     var reasons = {};
-    (s.rejections || []).forEach(function (r) { reasons[r.reason] = (reasons[r.reason] || 0) + 1; });
-    var opts = '<option value="">全部原因</option>' + Object.keys(reasons).map(function (k) {
-      return '<option value="' + esc(k) + '">' + esc(k) + ' (' + reasons[k] + ')</option>';
+    all0.forEach(function (r) { reasons[r.reason] = (reasons[r.reason] || 0) + 1; });
+    var rf = state.reasonFilter || '';
+    var all = rf ? all0.filter(function (r) { return r.reason === rf; }) : all0;
+    var opts = '<option value="">全部原因 (' + all0.length + ')</option>' + Object.keys(reasons).map(function (k) {
+      return '<option value="' + esc(k) + '"' + (k === rf ? ' selected' : '') + '>' + esc(k) + ' (' + reasons[k] + ')</option>';
     }).join('');
-    var rows = (s.rejections || []).map(function (r) {
-      return '<tr data-reason="' + esc(r.reason) + '"><td class="mono">' + r.trade_date + '</td><td class="mono">' + esc(r.symbol) +
+    var rows = slice(all, 'rejections').map(function (r) {
+      return '<tr><td class="mono">' + r.trade_date + '</td><td class="mono">' + esc(r.symbol) +
         '</td><td>' + (r.side_name === 'SELL' ? '卖' : '买') + '</td><td class="num">' + r.quantity + '</td><td class="warn">' + esc(r.reason) + '</td></tr>';
     }).join('') || '<tr><td colspan="5" class="muted">0 拒单 ✓ 全部通过</td></tr>';
     return '<div class="card"><div style="margin-bottom:10px"><select id="reasonf" aria-label="按原因筛选">' + opts + '</select></div>' +
-      '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th><th>原因</th></tr></thead><tbody id="rejbody">' + rows + '</tbody></table></div>';
+      '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th><th>原因</th></tr></thead><tbody>' + rows + '</tbody></table>' + pager('rejections', all.length) + '</div>';
   }
 
-  function wireReasonFilter() {
+  function wireTabControls(id) {
     var sel = document.getElementById('reasonf');
-    if (!sel) return;
-    sel.addEventListener('change', function () {
-      var v = sel.value;
-      Array.prototype.forEach.call(document.querySelectorAll('#rejbody tr'), function (tr) {
-        tr.style.display = (!v || tr.getAttribute('data-reason') === v) ? '' : 'none';
+    if (sel) sel.addEventListener('change', function () { state.reasonFilter = sel.value; state.page.rejections = 0; renderOverview(id, 'rejections'); });
+    Array.prototype.forEach.call(document.querySelectorAll('.pgbtn'), function (b) {
+      b.addEventListener('click', function () {
+        var tab = b.getAttribute('data-tab'), d = parseInt(b.getAttribute('data-d'), 10);
+        state.page[tab] = Math.max(0, (state.page[tab] || 0) + d);
+        renderOverview(id, tab);
       });
     });
   }
@@ -266,18 +295,37 @@
 
   function compareView(s) {
     var st = s.strategies || [];
-    if (st.length <= 1) return '<div class="card muted">单策略回测，无对比。多策略时这里并列各子账户的收益/回撤/成交/拒单。</div>';
+    if (st.length <= 1) return '<div class="card muted">单策略回测，无对比。多策略时这里并列各子账户的收益/回撤/成交/拒单并叠加净值。</div>';
     var rows = st.map(function (x) {
       return '<tr><td class="mono">' + esc(x.strategy_id) + '</td><td class="num ' + cls(x.total_return) + '">' + pct(x.total_return) +
         '</td><td class="num loss">' + pct(x.max_drawdown) + '</td><td class="num">' + money(x.total_value) +
         '</td><td class="num">' + ((x.trades || []).length) + '</td><td class="num">' + ((x.rejections || []).length) + '</td></tr>';
     }).join('');
+    var hasDaily = st.some(function (x) { return (x.daily || []).length; });
+    var chart = hasDaily ? '<div class="card"><div style="font-weight:500;margin-bottom:8px">各策略净值（归一到 100）</div><div style="height:260px"><canvas id="cmp"></canvas></div></div>' : '';
     return '<div class="card"><table><thead><tr><th>策略</th><th class="num">收益</th><th class="num">最大回撤</th>' +
-      '<th class="num">期末权益</th><th class="num">成交</th><th class="num">拒单</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      '<th class="num">期末权益</th><th class="num">成交</th><th class="num">拒单</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + chart;
+  }
+
+  function drawCompare(s) {
+    if (!window.Chart || !document.getElementById('cmp')) return;
+    var st = (s.strategies || []).filter(function (x) { return (x.daily || []).length; });
+    if (!st.length) return;
+    var palette = [cssVar('--accent'), cssVar('--warn'), cssVar('--profit'), cssVar('--loss'), cssVar('--muted')];
+    var labels = (st[0].daily || []).map(function (d) { return d.trade_date; });
+    var ds = st.map(function (x, i) {
+      var base = x.daily[0].total_value || 1;
+      return { label: x.strategy_id, data: x.daily.map(function (d) { return r2(d.total_value / base * 100); }), borderColor: palette[i % palette.length], borderWidth: 2, pointRadius: 0, tension: 0.15 };
+    });
+    charts.push(new Chart(document.getElementById('cmp'), {
+      type: 'line', data: { labels: labels, datasets: ds },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { labels: { color: cssVar('--text'), boxWidth: 14 } } }, scales: { x: { ticks: { color: cssVar('--muted'), maxTicksLimit: 8 }, grid: { display: false } }, y: { ticks: { color: cssVar('--muted') }, grid: { color: cssVar('--border') } } } }
+    }));
   }
 
   function renderOverview(id, tab) {
     destroyCharts();
+    state.jobId = id;
     setCrumbs([{ t: '回测历史', h: '#/' }, { t: id }]);
     var bm = state.benchmark || '';
     if (tab === 'overview') {
@@ -295,7 +343,8 @@
           : tab === 'positions' ? positionsView(s)
             : compareView(s);
       app.innerHTML = tabsHtml(id, tab) + body;
-      if (tab === 'rejections') wireReasonFilter();
+      wireTabControls(id);
+      if (tab === 'compare') drawCompare(s);
     });
   }
 

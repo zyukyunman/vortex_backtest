@@ -48,6 +48,19 @@ def test_ui_shell_is_served(tmp_path: Path) -> None:
     assert client.get("/ui/static/app.css").status_code == 200
 
 
+def test_cancel_queued_job(tmp_path: Path) -> None:
+    app = create_app(tmp_path, run_worker=False)
+    c = TestClient(app)
+    c.post("/accounts", json={"account_id": "a", "initial_cash": 100000})
+    c.post("/accounts/a/orders", json={"request_id": "o1", "trade_date": "2026-06-01", "symbol": "000001.SZ", "side": 1, "quantity": 1000})
+    jid = c.post("/backtests", json={"account_id": "a", "frequency": "1min", "price_adjustment": "qfq", "start_date": "2026-06-01", "end_date": "2026-06-05"}).json()["job_id"]
+    assert c.get(f"/backtests/{jid}").json()["status"] == "queued"  # run_worker=False → 不执行
+    r = c.post(f"/backtests/{jid}/cancel")
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"
+    assert len(c.get("/backtests", params={"status": "cancelled"}).json()) == 1
+    assert c.post(f"/backtests/{jid}/cancel").status_code == 409  # 已终态不可再取消
+
+
 def test_benchmarks_catalog(tmp_path: Path) -> None:
     client = TestClient(create_app(tmp_path, run_worker=False))
     body = client.get("/benchmarks").json()

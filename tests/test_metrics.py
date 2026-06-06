@@ -40,3 +40,28 @@ def test_benchmark_relative_skipped_when_too_short() -> None:
     # 只有 2 个净值点 → 1 个收益，n<2，不给基准相对块
     m = compute_metrics([100, 101], benchmark_values=[100, 100.5])
     assert "benchmark_relative" not in m
+
+
+def test_known_numeric_values() -> None:
+    """净值 [100,110,99,108.9] → 收益 [+10%,-10%,+10%]，对拍手算闭式值（年化 244）。"""
+    m = compute_metrics([100.0, 110.0, 99.0, 108.9])
+    a, r = m["absolute"], m["risk_adjusted"]
+    assert a["cumulative_return"] == pytest.approx(0.089, abs=1e-6)
+    assert a["max_drawdown"] == pytest.approx(-0.1, abs=1e-6)
+    assert a["annual_volatility"] == pytest.approx(1.8037, abs=1e-3)
+    assert r["sharpe"] == pytest.approx(4.5092, abs=1e-3)
+    assert r["sortino"] == pytest.approx(9.0185, abs=1e-3)
+
+
+def test_matches_empyrical() -> None:
+    """与 empyrical 对拍（缺库则跳过）：sharpe/sortino/年化波动/最大回撤 口径一致。"""
+    ep = pytest.importorskip("empyrical")
+    import numpy as np
+
+    values = [100.0, 110.0, 99.0, 108.9, 103.0, 109.0]
+    rets = np.array([values[i] / values[i - 1] - 1 for i in range(1, len(values))])
+    m = compute_metrics(values, periods_per_year=244)
+    assert m["risk_adjusted"]["sharpe"] == pytest.approx(float(ep.sharpe_ratio(rets, annualization=244)), abs=1e-4)
+    assert m["risk_adjusted"]["sortino"] == pytest.approx(float(ep.sortino_ratio(rets, annualization=244)), abs=1e-4)
+    assert m["absolute"]["annual_volatility"] == pytest.approx(float(ep.annual_volatility(rets, annualization=244)), abs=1e-4)
+    assert m["absolute"]["max_drawdown"] == pytest.approx(float(ep.max_drawdown(rets)), abs=1e-6)

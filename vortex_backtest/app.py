@@ -369,6 +369,25 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     def get_benchmarks() -> dict:
         return benchmark_mod.list_benchmarks()
 
+    @app.post("/backtests/{job_id}/cancel", response_model=BacktestJobOut)
+    def cancel_backtest(
+        job_id: str,
+        data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
+    ) -> dict:
+        """取消作业：排队中→cancelled；运行中无法安全中断（同步执行）→409；终态→409。"""
+        job = normalize_job(_get_job_or_404(data_store, job_id))
+        status = job["status"]
+        if status == "queued":
+            data_store.cancel_queued_job(job_id)
+            return normalize_job(data_store.get_job(job_id))
+        if status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "cannot_cancel_running", "hint": "运行中作业暂不支持中断，待其完成"},
+            )
+        raise HTTPException(status_code=409, detail={"error": "not_cancellable", "status": status})
+
     @app.get("/accounts/{account_id}/summary", response_model=AccountSummaryOut)
     def get_latest_account_summary(
         account_id: str,

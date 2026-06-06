@@ -409,6 +409,16 @@ class DataStore:
             )
         return self.get_job(job_id)
 
+    def cancel_queued_job(self, job_id: str) -> bool:
+        """取消**排队中**的作业（置 cancelled）。运行中无法安全中断（同步执行），返回 False。"""
+        completed_at = encode_dt(utc_now())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE jobs SET status = 'cancelled', completed_at = ? WHERE job_id = ? AND status = 'queued'",
+                (completed_at, job_id),
+            )
+            return cursor.rowcount == 1
+
     def get_job(self, job_id: str) -> dict[str, Any]:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
