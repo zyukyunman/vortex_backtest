@@ -140,6 +140,7 @@ class BacktestJobOut(BaseModel):
     report_dir: Path | None = None
     summary: dict[str, Any] | None = None
     progress: dict[str, Any] | None = None
+    strategy_ids: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

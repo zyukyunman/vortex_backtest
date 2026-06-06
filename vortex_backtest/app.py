@@ -189,6 +189,17 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         )
         return normalize_job(data_store.get_job(job_id))
 
+    def _job_out(row: dict) -> dict:
+        """normalize_job + 派生 strategy_ids(便于列表直接显示策略名,不暴露内部路径)。"""
+        out = normalize_job(row)
+        sids: list[str] = []
+        for run in strat_mod._runs_from_job(strat_mod.job_view(row)):
+            sid = run.get("strategy_id")
+            if sid and sid not in sids:
+                sids.append(sid)
+        out["strategy_ids"] = sids
+        return out
+
     @app.get("/backtests", response_model=list[BacktestJobOut])
     def list_backtests(
         data_store: DataStore = Depends(get_store),
@@ -196,7 +207,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         status: str | None = Query(default=None),
     ) -> list[dict]:
         return [
-            normalize_job(row)
+            _job_out(row)
             for row in data_store.list_jobs(account_id=account_id, status=status)
         ]
 
@@ -205,7 +216,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         job_id: str,
         data_store: DataStore = Depends(get_store),
     ) -> dict:
-        return normalize_job(_get_job_or_404(data_store, job_id))
+        return _job_out(_get_job_or_404(data_store, job_id))
 
     @app.get("/backtests/{job_id}/summary", response_model=AccountSummaryOut)
     def get_backtest_summary(
@@ -334,13 +345,13 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         result: dict = {"dates": dates, "drawdown": drawdown, "rebase": rebased}
         if rebased and equity and equity[0]:
             base0 = equity[0]
-            result["equity"] = [round(v / base0 * 100.0, 6) for v in equity]
-            result["baseline"] = 100.0
+            result["equity"] = [round(v / base0, 6) for v in equity]  # 起点 1.0
+            result["baseline"] = 1.0
         else:
             result["equity"] = equity
             result["baseline"] = initial_cash
         if benchmark:
-            series = benchmark_mod.benchmark_series(benchmark, dates)
+            series = benchmark_mod.benchmark_series(benchmark, dates, base=1.0)
             result["benchmark"] = {
                 "symbol": benchmark,
                 "values": series,
@@ -412,14 +423,24 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
                 return strat.get("daily", []) or []
         return summary.get("daily", []) or []
 
+    def _strategy_entry(job_id: str, strategy_id: str) -> dict:
+        try:
+            job = normalize_job(_get_job_or_404(store, job_id))
+        except HTTPException:
+            return {}
+        for strat in (job.get("summary") or {}).get("strategies", []) or []:
+            if strat.get("strategy_id") == strategy_id:
+                return strat
+        return {}
+
     def _equity_from_daily(daily: list[dict], benchmark: str | None) -> dict:
         dates = [d["trade_date"] for d in daily]
         eq = [float(d["total_value"]) for d in daily]
         result: dict = {"dates": dates, "drawdown": [float(d.get("drawdown", 0.0)) for d in daily], "rebase": True}
-        result["equity"] = [round(v / eq[0] * 100.0, 6) for v in eq] if (eq and eq[0]) else eq
-        result["baseline"] = 100.0
+        result["equity"] = [round(v / eq[0], 6) for v in eq] if (eq and eq[0]) else eq  # 起点 1.0
+        result["baseline"] = 1.0
         if benchmark:
-            series = benchmark_mod.benchmark_series(benchmark, dates)
+            series = benchmark_mod.benchmark_series(benchmark, dates, base=1.0)
             result["benchmark"] = {"symbol": benchmark, "values": series, "available": series is not None}
         return result
 
@@ -478,7 +499,12 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
             if agg["strategy_id"] == strategy_id:
                 latest_done = next((r for r in agg["runs"] if r["status"] == "completed"), None)
                 if latest_done:
-                    agg["equity"] = _equity_from_daily(_strategy_daily(latest_done["job_id"], strategy_id), benchmark)
+                    entry = _strategy_entry(latest_done["job_id"], strategy_id)
+                    daily = entry.get("daily") or _strategy_daily(latest_done["job_id"], strategy_id)
+                    agg["equity"] = _equity_from_daily(daily, benchmark)
+                    agg["positions"] = entry.get("positions", []) or []
+                    agg["trades"] = (entry.get("trades", []) or [])[-50:]
+                    agg["latest_job_id"] = latest_done["job_id"]
                 return agg
         raise HTTPException(status_code=404, detail="strategy not found")
 

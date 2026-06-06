@@ -145,6 +145,7 @@ def leaderboard(aggregates: list[dict], *, metric: str = "total_return", scope: 
             continue
         rows.append({"strategy_id": a["strategy_id"], "metric": metric, "scope": scope, "value": val,
                      "job_id": src.get("job_id"), "board": a["board"], "n_runs": a["n_runs"],
-                     "favorite": a["favorite"]})
+                     "favorite": a["favorite"], "symbols": a.get("symbols", []),
+                     "metrics": {k: src.get(k) for k in ("total_return", "annual_return", "sharpe", "sortino", "calmar", "max_drawdown")}})
     rows.sort(key=lambda r: r["value"], reverse=True)
     return rows[:top]
