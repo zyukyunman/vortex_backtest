@@ -7,6 +7,8 @@ depends_on: design/03-productization-plan.md
 
 # vortex_backtest 展示界面规格
 
+> **⚠ 状态更新（2026-06-06）：本规格暂不实现。** 负责人定调"服务不在于可视化"，回测报告到每日净值级别的 JSON/CSV 即可。本文保留作为将来若需要看板时的参考规格。
+
 ## Product Decision
 
 MVP 需要一个 HTML 界面，但它**只回答量化用户一个问题**：

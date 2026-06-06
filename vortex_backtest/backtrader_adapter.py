@@ -293,7 +293,6 @@ class BacktraderMinuteReplayEngine:
             "trades": trades,
             "rejections": rejections,
             "daily": daily,
-            "minutes": minute_snapshots,
         }
 
 
@@ -575,7 +574,6 @@ def aggregate_summaries(
     rejections = flatten(item["rejections"] for item in strategy_summaries)
     positions = flatten(item["positions"] for item in strategy_summaries)
     daily = aggregate_daily(strategy_summaries, initial_cash)
-    minutes = aggregate_minutes(strategy_summaries)
     total_value = cash + market_value
     return {
         "account_id": account["account_id"],
@@ -595,7 +593,6 @@ def aggregate_summaries(
         "trades": trades,
         "rejections": rejections,
         "daily": daily,
-        "minutes": minutes,
         "strategies": strategy_summaries,
         "artifacts": {},
     }
@@ -660,13 +657,11 @@ def write_reports(report_dir: Path, summary: dict[str, Any]) -> dict[str, str]:
     artifacts = {
         "account_summary": report_dir / "account_summary.json",
         "daily_equity": report_dir / "daily_equity.csv",
-        "minute_equity": report_dir / "minute_equity.csv",
         "trades": report_dir / "trades.csv",
         "positions": report_dir / "positions.csv",
         "rejections": report_dir / "rejections.csv",
     }
     write_csv(artifacts["daily_equity"], summary["daily"])
-    write_csv(artifacts["minute_equity"], slim_equity_rows(summary["minutes"], "timestamp"))
     write_csv(artifacts["trades"], summary["trades"])
     write_csv(artifacts["positions"], summary["positions"])
     write_csv(artifacts["rejections"], summary["rejections"])

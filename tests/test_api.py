@@ -431,11 +431,11 @@ def test_http_backtest_runs_independent_minute_strategies(tmp_path: Path, monkey
     assert summary["price_adjustment"] == "qfq"
     assert summary["frequency"] == "1min"
     assert Path(summary["artifacts"]["account_summary"]).exists()
-    assert Path(summary["artifacts"]["minute_equity"]).exists()
+    assert Path(summary["artifacts"]["daily_equity"]).exists()
 
-    minutes = client.get(f"/backtests/{job['job_id']}/minutes").json()
-    assert len(minutes) >= 2
-    assert minutes[0]["frequency"] == "1min"
+    daily = client.get(f"/backtests/{job['job_id']}/daily").json()
+    assert len(daily) >= 1
+    assert daily[0]["total_value"] > 0
 
 
 def test_http_backtest_reports_missing_minute_data(tmp_path: Path, monkeypatch) -> None:

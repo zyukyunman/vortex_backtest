@@ -211,7 +211,6 @@ class StrategySummaryOut(BaseModel):
     trades: list[TradeOut]
     rejections: list[RejectionOut]
     daily: list[DailySnapshotOut] = Field(default_factory=list)
-    minutes: list[MinuteSnapshotOut] = Field(default_factory=list)
 
 
 class AccountSummaryOut(BaseModel):
@@ -232,7 +231,6 @@ class AccountSummaryOut(BaseModel):
     trades: list[TradeOut]
     rejections: list[RejectionOut]
     daily: list[DailySnapshotOut] = Field(default_factory=list)
-    minutes: list[MinuteSnapshotOut] = Field(default_factory=list)
     strategies: list[StrategySummaryOut] = Field(default_factory=list)
     artifacts: dict[str, str]
 

@@ -15,8 +15,6 @@ from .models import (
     BacktestCreate,
     BacktestJobOut,
     DailySnapshotOut,
-    EngineName,
-    MinuteSnapshotOut,
     OrderCreate,
     OrderOut,
     PositionOut,
@@ -181,14 +179,6 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     ) -> list[dict]:
         summary = _completed_summary_or_404(data_store, job_id)
         return summary.get("daily", [])
-
-    @app.get("/backtests/{job_id}/minutes", response_model=list[MinuteSnapshotOut])
-    def get_backtest_minute_snapshots(
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-    ) -> list[dict]:
-        summary = _completed_summary_or_404(data_store, job_id)
-        return summary.get("minutes", [])
 
     @app.get("/backtests/{job_id}/daily/{trade_date}", response_model=DailySnapshotOut)
     def get_backtest_daily_snapshot(
