@@ -25,6 +25,22 @@ cd /Users/zyukyunman/Documents/vortex/vortex_backtest
 
 之后一律用 `.venv/bin/python ...`（或先 `source .venv/bin/activate`），别用裸 `python3`。
 
+### 2.1 命令行 `vortex-backtest`（serve + 协议客户端）
+
+安装后有命令行入口（改过入口的话先重装一次 `pip install -e '.[dev]'`）。`serve` 起服务，其余子命令通过 HTTP 协议操作运行中的服务：
+
+```bash
+.venv/bin/vortex-backtest serve --port 8765           # 起服务
+.venv/bin/vortex-backtest account create --id demo --cash 100000
+.venv/bin/vortex-backtest order add --account demo --request-id buy-1 \
+    --date 2026-01-02 --symbol 000001.SZ --side buy --qty 100 --batch b1
+.venv/bin/vortex-backtest backtest run --account demo --start 2026-01-02 --end 2026-01-05 \
+    --batch b1 --wait                                  # 提交并轮询到完成
+.venv/bin/vortex-backtest report <job_id> --what daily
+```
+
+完整协议与命令行参考见 `design/10-api-protocol.md`。**注意 API 是异步的**：`POST /backtests` 返回 `202+job_id`，需轮询 `GET /backtests/{job_id}` 到 `completed` 再取报告（CLI 的 `--wait` 已封装这一步）。
+
 ---
 
 ## 3. 数据

@@ -25,7 +25,7 @@ spike = [
     "pyqlib>=0.9",
 ]
 [project.scripts]
-vortex-backtest = "vortex_backtest.app:main"
+vortex-backtest = "vortex_backtest.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

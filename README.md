@@ -3,21 +3,21 @@
 独立 HTTP 回测/账户回放服务。当前路线固定为：
 
 ```text
-HTTP 协议层 + Backtrader 分钟事件基础 + Tushare 本地 Parquet 数据 + 自研 A 股规则层
+HTTP 协议层 + 异步作业 + A 股分钟撮合/规则层 + Tushare 本地 Parquet 数据
 ```
 
 服务不再维护 RQAlpha adapter，也不再维护旧 `ashare_replay` fallback。第一阶段只支持 A 股现金账户、`1min` 分钟回测、前复权 `qfq` 单一口径、多策略独立账户回放。
 
-详细设计见 [Backtrader + Tushare 分钟级 A 股回测框架设计](docs/backtrader_minute_design.md)。
+架构评审 / 引擎选型 / 协议 / 路线图见 `design/01`–`design/10`；部署与命令行见 [docs/operations.md](docs/operations.md)；HTTP 协议与 CLI 参考见 [design/10](design/10-api-protocol.md)。
 
 ## 当前能力
 
 - `POST /accounts` 创建账户，默认 `engine=backtrader`
 - `POST /accounts/{account_id}/orders` 提交外部订单
-- `POST /backtests` 运行分钟级 qfq 回测
+- `POST /backtests` 提交 qfq 回测（**异步**：返回 `202 + job_id`，轮询 `GET /backtests/{job_id}` 到 `completed`）
+- `GET /backtests/{job_id}` 查询作业状态/进度
 - `GET /backtests/{job_id}/summary` 查询账户汇总
 - `GET /backtests/{job_id}/daily` 查询日级净值、持仓、成交、拒单
-- `GET /backtests/{job_id}/minutes` 查询分钟级净值
 - `GET /backtests/{job_id}/trades` 查询成交
 - `GET /backtests/{job_id}/rejections` 查询拒单
 - `GET /accounts/{account_id}/summary` 查询账户最近一次完成回测
@@ -50,22 +50,22 @@ export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
 
 ## 安装和启动
 
-建议 Python 3.12：
+建议 Python 3.12 或 3.13（需 ≥3.11）：
 
 ```bash
 cd /Users/zyukyunman/Documents/vortex/vortex_backtest
-python3 -m venv .venv
+python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-启动服务：
+启动服务（命令行 `serve` 子命令）：
 
 ```bash
 export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
 export VORTEX_BACKTEST_STATE_DIR=/tmp/vortex-backtest-state
 export VORTEX_BACKTEST_HOST=127.0.0.1
 export VORTEX_BACKTEST_PORT=8765
-.venv/bin/vortex-backtest
+.venv/bin/vortex-backtest serve
 ```
 
 健康检查：
@@ -125,15 +125,24 @@ curl -X POST http://127.0.0.1:8765/backtests \
   }'
 ```
 
-查询结果：
+回测是**异步**的：`POST /backtests` 返回 `202 + job_id`，先轮询作业到完成，再取**日级**报告（已无分钟级端点）：
 
 ```bash
+curl http://127.0.0.1:8765/backtests/<job_id>            # 轮询 status 到 completed
 curl http://127.0.0.1:8765/backtests/<job_id>/summary
 curl http://127.0.0.1:8765/backtests/<job_id>/daily
-curl http://127.0.0.1:8765/backtests/<job_id>/minutes
 curl http://127.0.0.1:8765/backtests/<job_id>/trades
 curl http://127.0.0.1:8765/backtests/<job_id>/rejections
 ```
+
+也可用命令行（封装了提交+轮询）：
+
+```bash
+.venv/bin/vortex-backtest backtest run --account demo --start 2026-01-02 --end 2026-01-05 --batch batch-main --wait
+.venv/bin/vortex-backtest report <job_id> --what daily
+```
+
+协议与 CLI 完整参考见 [design/10-api-protocol.md](design/10-api-protocol.md)。
 
 ## 多策略回测
 

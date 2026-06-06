@@ -25,4 +25,4 @@ RUN pip install --no-cache-dir .
 VOLUME ["/workspace", "/state"]
 EXPOSE 8765
 
-CMD ["sh", "-c", "vortex-backtest"]
+CMD ["vortex-backtest", "serve"]

@@ -20,14 +20,17 @@ depends_on: design/03-productization-plan.md, design/02-architecture-decisions.m
 
 ## 待办（按顺序逐个做）
 
-### P4 · 异步作业模型（ADR-3）← 现在做
+### P4 · 异步作业模型（ADR-3）（已做）✅
 `POST /backtests` 改为入队返回 `202 + job_id`（不再请求线程内同步跑完）；后台 worker 执行；`GET /backtests/{job_id}` 轮询状态与进度；启动时把残留 `running` 标 `interrupted` 并重排；相同入参幂等去重。**引擎无关，不会被 Qlib 迁移作废。**
 
 ### P4b · 报告聚焦日级（已做）✅
 负责人定调：**服务非可视化导向**，回测报告**到每日净值级别即可，不需要分钟级**。据此：summary 不再内嵌分钟快照、不写 `minute_equity.csv`、删除 `/minutes` 端点与模型 `minutes` 字段。顺带消除了"把分钟数据整坨塞进 SQLite"的臃肿（A3）。报告 = 日净值曲线 + 当日成交/拒单/持仓 + 摘要指标。
 
-### ~~P5 · 回测结果看板原型~~（取消）
-负责人明确"服务不在于可视化"，**取消** HTML 看板。`design/04` 规格保留备查、不实现。最终回测报告以 JSON/CSV（日级）交付即可。
+### P-CLI · 命令行 + 协议交互 ← 现在做
+负责人定调：**先把命令行和协议（HTTP API）交互做扎实，之后做看板才有意义。** 为服务补 `vortex-backtest` 命令行：`serve`（起服务）+ `account/order/backtest/report/symbol` 子命令通过 HTTP 协议与服务交互（提交回测→轮询作业→取日级报告）。并把协议与异步作业生命周期文档化。
+
+### P5 · 回测结果看板（推迟，非取消）
+"服务不在于可视化"，但 CLI+协议扎实后再做看板**是有意义的**——因此**推迟**到 P-CLI 之后。`design/04` 规格保留备查；报告先以 JSON/CSV（日级）交付。
 
 ### P6 · 强化
 写接口 token 鉴权（建账户/下单/提交回测）+ 错误信息脱敏（M6）；费率/印花税/滑点/参与率可配置（M4）；基准/相对收益（可选）。
@@ -37,6 +40,6 @@ depends_on: design/03-productization-plan.md, design/02-architecture-decisions.m
 
 ## 顺序理由
 
-- **P5 看板取消**：服务非可视化导向，报告到日级 JSON/CSV 即可。
-- **P2/P3 放最后**：依赖数据侧 P7。但 **P4/P6 引擎无关**，现在就能做、且 Qlib 迁移后不浪费。
+- **先 CLI+协议，再看板**：负责人定调；看板推迟到 CLI+协议扎实后做（那时才有意义）。
+- **P2/P3 放最后**：依赖数据侧 P7。但 **P4/P6/CLI 引擎无关**，现在就能做、且 Qlib 迁移后不浪费。
 - 每项独立小步提交、`pytest` 必绿再进下一项。
