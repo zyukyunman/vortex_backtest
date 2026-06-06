@@ -34,7 +34,7 @@ class TushareMinuteDataLoader:
         normalized_symbols = {normalize_symbol(symbol) for symbol in symbols}
         start_key = date_key(start_date)
         end_key = date_key(end_date)
-        minutes = self._read_required("stk_mins", "minute_data_missing")
+        minutes = self._read_required("stk_mins", "minute_data_missing", symbols=normalized_symbols)
         minutes = normalize_columns(minutes)
         if minutes.empty:
             raise ValueError("minute_data_missing")
@@ -49,7 +49,7 @@ class TushareMinuteDataLoader:
             raise ValueError("minute_data_missing")
         minutes["trade_time"] = pd.to_datetime(minutes["trade_time"])
 
-        adj_factor = self._read_required("adj_factor", "adjustment_data_missing")
+        adj_factor = self._read_required("adj_factor", "adjustment_data_missing", symbols=normalized_symbols)
         adj_factor = normalize_columns(adj_factor)
         if adj_factor.empty:
             raise ValueError("adjustment_data_missing")
@@ -103,7 +103,7 @@ class TushareMinuteDataLoader:
         enriched["limit_up_qfq"] = round_series(enriched["up_limit"] * enriched["qfq_multiplier"])
         enriched["limit_down_qfq"] = round_series(enriched["down_limit"] * enriched["qfq_multiplier"])
 
-        suspended = self._read_optional("suspend_d")
+        suspended = self._read_optional("suspend_d", symbols=normalized_symbols)
         enriched["suspended"] = False
         if not suspended.empty:
             suspended = normalize_columns(suspended)
@@ -123,7 +123,7 @@ class TushareMinuteDataLoader:
                 enriched["suspended"] = enriched["suspended_flag"].fillna(False).astype(bool)
                 enriched = enriched.drop(columns=["suspended_flag"])
 
-        st_rows = self._read_optional("stock_st")
+        st_rows = self._read_optional("stock_st", symbols=normalized_symbols)
         enriched["is_st"] = False
         if not st_rows.empty and {"symbol", "date"}.issubset(normalize_columns(st_rows).columns):
             st_rows = normalize_columns(st_rows)
@@ -146,19 +146,28 @@ class TushareMinuteDataLoader:
         calendar = sorted(int(item) for item in enriched["date"].unique())
         return TushareMinuteDataset(minutes=enriched, calendar=calendar)
 
-    def _read_required(self, dataset: str, error: str) -> pd.DataFrame:
-        frame = self._read_optional(dataset)
+    def _read_required(
+        self, dataset: str, error: str, symbols: set[str] | None = None
+    ) -> pd.DataFrame:
+        frame = self._read_optional(dataset, symbols=symbols)
         if frame.empty:
             raise ValueError(error)
         return frame
 
-    def _read_optional(self, dataset: str) -> pd.DataFrame:
+    def _read_optional(self, dataset: str, symbols: set[str] | None = None) -> pd.DataFrame:
         root = self.data_dir / dataset
         if not root.exists():
             return pd.DataFrame()
         paths = sorted(root.rglob("*.parquet"))
         if not paths:
             return pd.DataFrame()
+        # 分区裁剪（修复 C2）：按 `symbol=...` 分区目录只读所需标的的文件，避免全市场全量读盘。
+        # 列出路径很廉价、读取才贵；仅当数据集确为 symbol 分区（命中）时才裁剪，否则全读。
+        if symbols:
+            markers = {f"symbol={sym}" for sym in symbols}
+            pruned = [p for p in paths if markers.intersection(p.parts)]
+            if pruned:
+                paths = pruned
         frames = [pd.read_parquet(path) for path in paths]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 

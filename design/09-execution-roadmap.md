@@ -38,8 +38,10 @@ depends_on: design/03-productization-plan.md, design/02-architecture-decisions.m
 - 撮合参数可按回测覆盖（`BacktestCreate.execution`：费率/印花税/过户费/参与率/滑点）。✅
 - 待选：基准 / 相对收益指标（可选，未做）。
 
-### P2/P3 · Qlib 引擎迁移 + 数据访问（ADR-1/2）← 待数据侧 P7
+### P2/P3 · Qlib 引擎迁移 + 数据访问（ADR-1/2）← 待 Linux + 数据侧 P7
 等 `vortex_data` 的 Qlib 导出就绪后：删 backtrader、薄规则层接 Qlib `Exchange`、用 `FileStorage` 直接读盘、跑 `spike` 4 项验收 → 把 ADR-1 转 Accepted。
+
+**进展（2026-06-06，见 design/11）**：数据访问已做 **C2 分区裁剪**（按 `symbol=` 只读所需标的）；用**真实数据（20260601–05）**经当前引擎端到端回测**验证通过**（T+1 / 科创手数 / qfq / 异步 / 日级报告）。**Qlib 本机装不上**（py3.13 + macOS arm64 无 wheel）→ Qlib 真机回测放到 **Linux**（manylinux wheel）。当前自研引擎已可在真实数据上出可信日级回测。
 
 ## 顺序理由
 

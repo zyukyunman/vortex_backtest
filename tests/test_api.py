@@ -297,6 +297,19 @@ def test_qfq_anchors_to_global_latest_factor_not_window(tmp_path: Path) -> None:
     assert float(row["open_qfq"]) == 5.0           # raw 10.0 × 0.5；窗口最新(1.0)的旧 bug 会得 10.0
 
 
+def test_read_optional_prunes_by_symbol_partition(tmp_path: Path) -> None:
+    data = tmp_path / "data" / "ds"
+    for sym, val in [("000001.SZ", 1), ("600000.SH", 2)]:
+        part = data / "year=2026" / f"symbol={sym}"
+        part.mkdir(parents=True)
+        pd.DataFrame({"symbol": [sym], "v": [val]}).to_parquet(part / "data.parquet", index=False)
+    loader = TushareMinuteDataLoader(tmp_path)
+    pruned = loader._read_optional("ds", symbols={"000001.SZ"})
+    assert list(pruned["symbol"]) == ["000001.SZ"]            # 只读请求的 symbol 分区（修复 C2）
+    full = loader._read_optional("ds")
+    assert set(full["symbol"]) == {"000001.SZ", "600000.SH"}  # 不传 symbols 则全读
+
+
 def test_tick_check_uses_raw_price_not_qfq() -> None:
     rules = AShareRuleEngine()
     bar = {
