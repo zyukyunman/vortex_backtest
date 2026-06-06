@@ -210,8 +210,33 @@
       '<div class="card"><div style="font-weight:500;margin-bottom:10px">说明</div><p class="note">拒单≠作业失败：撮合规则透明化在此呈现。点上方曲线数据点可联动当日成交/持仓（接 /trades、/positions）。</p></div></div>';
   }
 
+  function fallbackSvg(canvasId, series, note) {
+    var cv = document.getElementById(canvasId);
+    if (!cv || !cv.parentNode) return;
+    var H = cv.parentNode.clientHeight || 240, W = 700, pad = 8;
+    var all = [];
+    series.forEach(function (s) { s.data.forEach(function (v) { if (v != null && isFinite(v)) all.push(v); }); });
+    if (!all.length) { cv.parentNode.innerHTML = '<div class="muted" style="padding:20px">无数据</div>'; return; }
+    var mn = Math.min.apply(null, all), mx = Math.max.apply(null, all);
+    if (mn === mx) { mn -= 1; mx += 1; }
+    function xx(i, n) { return pad + i * (W - 2 * pad) / Math.max(1, n - 1); }
+    function yy(v) { return pad + (mx - v) / (mx - mn) * (H - 2 * pad); }
+    var paths = series.map(function (s) {
+      var d = s.data.map(function (v, i) { return (i ? 'L' : 'M') + xx(i, s.data.length).toFixed(1) + ' ' + yy(v).toFixed(1); }).join(' ');
+      return '<path d="' + d + '" fill="none" stroke="' + s.color + '" stroke-width="' + (s.dash ? 1.5 : 2) + '"' + (s.dash ? ' stroke-dasharray="5 4"' : '') + '/>';
+    }).join('');
+    cv.parentNode.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '" preserveAspectRatio="none" role="img">' + paths + '</svg>' +
+      '<p class="note">' + (note || '静态预览 · Chart.js 未从 CDN 加载（离线/代理环境）；交互图需联网或本地化 Chart.js') + '</p>';
+  }
+
   function drawEquity(eq) {
-    if (!window.Chart) return;
+    if (!window.Chart) {
+      var fs = [{ data: eq.equity, color: cssVar('--accent') }];
+      if (eq.benchmark && eq.benchmark.available && eq.benchmark.values) fs.push({ data: eq.benchmark.values, color: cssVar('--muted'), dash: true });
+      fallbackSvg('eq', fs);
+      fallbackSvg('dd', [{ data: eq.drawdown.map(function (v) { return v * 100; }), color: cssVar('--loss') }], '回撤 % · 静态预览');
+      return;
+    }
     try { Chart.register(window.ChartZoom || window['chartjs-plugin-zoom']); } catch (e) {}
     var ds = [{ label: '策略', data: eq.equity, borderColor: cssVar('--accent'), borderWidth: 2, pointRadius: 0, tension: 0.15 }];
     if (eq.benchmark && eq.benchmark.available && eq.benchmark.values) {
@@ -308,10 +333,18 @@
   }
 
   function drawCompare(s) {
-    if (!window.Chart || !document.getElementById('cmp')) return;
+    if (!document.getElementById('cmp')) return;
     var st = (s.strategies || []).filter(function (x) { return (x.daily || []).length; });
     if (!st.length) return;
     var palette = [cssVar('--accent'), cssVar('--warn'), cssVar('--profit'), cssVar('--loss'), cssVar('--muted')];
+    if (!window.Chart) {
+      var fs = st.map(function (x, i) {
+        var base = x.daily[0].total_value || 1;
+        return { data: x.daily.map(function (d) { return d.total_value / base * 100; }), color: palette[i % palette.length] };
+      });
+      fallbackSvg('cmp', fs);
+      return;
+    }
     var labels = (st[0].daily || []).map(function (d) { return d.trade_date; });
     var ds = st.map(function (x, i) {
       var base = x.daily[0].total_value || 1;
