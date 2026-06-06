@@ -35,10 +35,31 @@ vortex_backtest: vortex-backtest-qlib 镜像（含 pyqlib）
 - Docker Hub 偶发超时：底座用**本地 tag**（`vbtqlib-base:amd64` = 拉过的 `python:3.12-slim`），让 BuildKit 用本地镜像、不去 Hub 校验（同 vortex_data `scripts/build-image.sh` 的离线底座思路）。
 - 一键：`scripts/build-qlib-image.sh [run <qlib数据目录>]`（`Dockerfile.qlib` 精简，只装 qlib + spike）。
 
-## 待办：把引擎真正切到 Qlib
+## Qlib 后端引擎跑通（2026-06-06，真实数据，镜像内）
 
-当前是 **spike**（离散验证 `deal_order` 机制），还不是完整回放引擎。下一步：
+spike 之后，已在 vortex_backtest 落地 **`QlibReplayEngine`**（`vortex_backtest/qlib_engine.py`）——薄规则层直接读 Qlib FileStorage 数据 + 复用 `market_rules.AShareRuleEngine`（T+1 冻结、分板手数、以数据为准的涨跌停、分项费用/滑点）+ 复用现有**异步作业 / 日级报告 / CLI** 框架。引擎按 `EngineName.qlib` 选用（`worker.engine_for`），pyqlib 在 `qlib.init` 处**惰性 import**，故本机无 qlib 也能跑 `pytest` 16/16。
 
-1. 在 vortex_backtest 写 **Qlib 后端的 `replay_engine`**：薄规则层接 Qlib `Exchange` —— T+1 冻结、科创 200+1/北交所手数、分项费用拆解、**以数据为准的涨跌停**（用导出的 `limit_up/limit_down` 构造 `limit_buy/limit_sell`）；复用现有**异步作业 / 日级报告 / CLI** 框架，镜像内对 qlib 数据出日级报告。
-2. ADR-1 转 **Accepted**（真机印证已具备）。
-3. 分钟级：vortex_data 导出 1min qlib 数据后同法（注意分钟会话网格 + 日字段广播）。
+在 `vortex-backtest-qlib` amd64 镜像内，挂载仓库源码 + `qlib_smoke`（SH600000/SZ000001，2026-01-05…06-05，100 个交易日）跑 `spike/qlib_engine_demo.py`：
+
+```
+docker run --rm --platform linux/amd64 \
+  -v <repo>:/work -w /work -e PYTHONPATH=/work \
+  -v <qlib_smoke>:/qlib:ro -e VORTEX_QLIB_PROVIDER_URI=/qlib \
+  vortex-backtest-qlib \
+  python spike/qlib_engine_demo.py --symbols 000001.SZ,600000.SH --start 2026-01-05 --end 2026-06-05
+```
+
+结果（**完整日级回测报告**）：
+
+- `status: completed`，`#trades 2`、`#rej 0`、`#daily 100`；
+- 2 笔买入按真实收盘成交：`000001.SZ` 1000 @ **11.50**、`600000.SH` 1000 @ **11.82**；
+- `total_value 996,989.77`、`total_return -0.30%`、`max_drawdown -0.41%`；`daily_equity.csv` 落盘。
+- **关键修复**：qlib 以 float32 存价（如 `11.8199996…`），直接喂 `is_tick_aligned`（0.01 网格）会全量 `invalid_price_tick` 拒单 → `qlib_engine` 建 bar 时把 OHLC/涨跌停 `round(…, 2)` 回真实价，tick 校验通过。
+
+→ **至此 design/06 源码结论 + 真机 spike + 完整引擎日级报告三重印证齐备**：Qlib 数据层 + 薄 A 股规则层产出与自研引擎同款日级报告。
+
+## 收尾
+
+1. ✅ Qlib 后端 `replay_engine` 已写并跑通（本节）。
+2. ✅ **ADR-1 转 Accepted**（`design/02` 已更新）。
+3. ⏳ 分钟级：待 vortex_data 导出 1min qlib 数据后同法（注意分钟会话网格 + 日字段广播）。

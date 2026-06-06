@@ -32,6 +32,7 @@ class PriceAdjustment(StrEnum):
 
 class EngineName(StrEnum):
     BACKTRADER = "backtrader"
+    QLIB = "qlib"
 
 
 class Frequency(StrEnum):

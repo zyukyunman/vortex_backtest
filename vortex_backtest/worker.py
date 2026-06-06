@@ -34,6 +34,10 @@ def engine_for(engine_name: str):
     engine = EngineName(engine_name)
     if engine == EngineName.BACKTRADER:
         return BacktraderMinuteReplayEngine()
+    if engine == EngineName.QLIB:
+        from .qlib_engine import QlibReplayEngine
+
+        return QlibReplayEngine()
     raise ValueError(f"unsupported engine: {engine_name}")
 
 

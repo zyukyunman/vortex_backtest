@@ -20,7 +20,7 @@ depends_on: design/01-code-review.md
 
 # ADR-1: 回测引擎框架选型
 
-**Status:** Proposed
+**Status:** Accepted（2026-06-06；源码结论 + 真机 spike + Qlib 后端引擎跑通完整日级报告，三重印证齐备，见 `design/12`）
 **Date:** 2026-06-06
 
 > **⚠ 更新（2026-06-06，晚于本 ADR 初稿）**：经与负责人讨论并补充两项关键输入——(1) 愿意把 `vortex_data` 一并统一到 Qlib（消除数据双栈），(2) 两仓同栈以减少跨栈排查——**本 ADR 的推荐已由"方案 C（薄自研核心）"改为"Qlib + 薄规则层"，详见 `design/05-backtest-engine-requirements.md`**。下方分析仍然有效（是得出结论的过程），但最终取向以 05 为准；05 给出了完整能力清单与一个 1 天 spike 作为锁定前的验证。
