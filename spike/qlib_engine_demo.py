@@ -24,6 +24,8 @@ def main() -> int:
     p.add_argument("--symbols", default="000001.SZ,600000.SH", help="逗号分隔（vortex 代码，如 600000.SH）")
     p.add_argument("--start", default="2026-01-05")
     p.add_argument("--end", default="2026-06-05")
+    p.add_argument("--freq", default="day", choices=["day", "1min"],
+                   help="day=日级 provider；1min=分钟 provider（引擎归约为日级会话 bar）")
     p.add_argument("--cash", type=float, default=1_000_000.0)
     p.add_argument("--report-dir", default="/tmp/qlib_engine_report")
     args = p.parse_args()
@@ -48,12 +50,12 @@ def main() -> int:
     summary = engine.run(
         job_id="demo", account=account, orders=orders, report_dir=Path(args.report_dir),
         start_date=date.fromisoformat(args.start), end_date=date.fromisoformat(args.end),
-        order_batch_id="b1", market_data_set_id="qlib_smoke", frequency="1min",
+        order_batch_id="b1", market_data_set_id="qlib_smoke", frequency=args.freq,
         price_adjustment="qfq", order_price_adjustment="qfq", default_price_type="close",
         strategies=strategies, execution={},
     )
 
-    print("=== QlibReplayEngine 日级回测报告 ===")
+    print(f"=== QlibReplayEngine 日级回测报告 (freq={args.freq}) ===")
     print("status: completed")
     print("total_value:", summary["total_value"], "return:", summary["total_return"], "maxDD:", summary["max_drawdown"])
     print("#trades", len(summary["trades"]), "#rej", len(summary["rejections"]), "#daily", len(summary["daily"]))

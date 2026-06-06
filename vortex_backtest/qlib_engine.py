@@ -128,15 +128,29 @@ class QlibReplayEngine:
             raise ValueError("no_symbols")
 
         codes = sorted(to_qlib_code(symbol) for symbol in all_symbols)
+        qlib_freq = "1min" if str(frequency).lower() in {"1min", "min", "minute"} else "day"
+        # 分钟频必须把 end_time 顶到当日 23:59，否则 qlib 把裸日期当 00:00:00，
+        # 会丢掉最后一个交易日的全部盘中分钟（09:30–15:00 都晚于 00:00）。
+        if qlib_freq == "1min":
+            start_time = f"{resolved_start.isoformat()} 00:00:00"
+            end_time = f"{resolved_end.isoformat()} 23:59:59"
+        else:
+            start_time = resolved_start.isoformat()
+            end_time = resolved_end.isoformat()
         frame = D.features(
             codes,
             _QLIB_FIELDS,
-            start_time=resolved_start.isoformat(),
-            end_time=resolved_end.isoformat(),
-            freq="day",
+            start_time=start_time,
+            end_time=end_time,
+            freq=qlib_freq,
         )
         if frame is None or frame.empty:
             raise ValueError("minute_data_missing")
+        if qlib_freq == "1min":
+            # 订单是日级（trade_date + open/close），把分钟 bar 归约为当日会话 bar：
+            # open=首分钟 / close=末分钟 / high·low=日内极值 / volume=日内累加（量能上限按全日量），
+            # 日级广播字段（factor/涨跌停/paused）整日为常数 → 取末值/极值。
+            frame = _aggregate_minute_to_daily(frame, pd)
         bars = _bars_by_symbol_date(frame, pd)
         if not bars:
             raise ValueError("minute_data_missing")
@@ -327,6 +341,28 @@ class QlibReplayEngine:
             "rejections": rejections,
             "daily": daily,
         }
+
+
+def _aggregate_minute_to_daily(frame: Any, pd: Any) -> Any:
+    """分钟 D.features（MultiIndex[instrument,datetime]）→ 日级会话 bar（同结构同列）。
+
+    open=当日首分钟、close=末分钟、high/low=日内极值、volume=日内累加；日级广播字段
+    （factor/change/limit_up/limit_down/paused）整日为常数，取末值/极值。`first`/`last`
+    默认跳过 NaN，故尾部空 bar 不会把 close 带成 NaN。归约后交给 `_bars_by_symbol_date`，
+    与日频走完全相同的建 bar / 回放路径。
+    """
+    df = frame.sort_index()
+    instruments = df.index.get_level_values(0)
+    days = pd.to_datetime(df.index.get_level_values(1)).normalize()
+    agg_map = {
+        "$open": "first", "$high": "max", "$low": "min", "$close": "last",
+        "$volume": "sum", "$factor": "last", "$change": "last",
+        "$limit_up": "last", "$limit_down": "last", "$paused": "max",
+    }
+    present = {col: how for col, how in agg_map.items() if col in df.columns}
+    daily = df.groupby([instruments, days]).agg(present)
+    daily.index = daily.index.set_names(["instrument", "datetime"])
+    return daily
 
 
 def _bars_by_symbol_date(frame: Any, pd: Any) -> dict[tuple[str, int], dict[str, Any]]:

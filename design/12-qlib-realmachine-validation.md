@@ -62,4 +62,28 @@ docker run --rm --platform linux/amd64 \
 
 1. ✅ Qlib 后端 `replay_engine` 已写并跑通（本节）。
 2. ✅ **ADR-1 转 Accepted**（`design/02` 已更新）。
-3. ⏳ 分钟级：待 vortex_data 导出 1min qlib 数据后同法（注意分钟会话网格 + 日字段广播）。
+3. ✅ **分钟级也已打通**（下一节）。
+
+## 分钟级 Qlib 回测（2026-06-06，真实分钟数据，镜像内）
+
+vortex_data 导出器原生支持 `--freq 1min`（源 `stk_mins`，日级字段广播到每分钟，落 `<field>.1min.bin`），**数据侧无需改**。导出 2 标的 5 个交易日：
+
+```
+vortex-data export qlib --freq 1min --symbols 000001.SZ,600000.SH \
+  --start 20260601 --end 20260605 --out workspace/qlib_smoke_1min
+# → calendar_size 1205 (5 日 × 241 分钟)，features 24 (2 标的 × 12 字段)
+```
+
+`QlibReplayEngine` 加分钟支持：`frequency=1min` 时 `D.features(freq="1min")` 读分钟 bar，再 `_aggregate_minute_to_daily` 归约为**当日会话 bar**（open=首分钟 / close=末分钟 / high·low=日内极值 / volume=日内累加；factor/涨跌停/paused 整日常数取末值），其后与日频走**完全相同**的建 bar / 回放 / 日级报告路径——因为订单是日级（trade_date + open/close）。
+
+镜像内对 `qlib_smoke_1min` 跑 `--freq 1min`：
+
+```
+status: completed  #trades 2  #rej 0  #daily 5
+T 2026-06-01 000001.SZ BUY 1000 @ 10.99；600000.SH BUY 1000 @ 9.32
+total_value 999,999.80  return -2e-7  maxDD -0.00038
+```
+
+**关键修复**：分钟频必须把 `end_time` 顶到当日 `23:59:59`，否则 qlib 把裸日期 `2026-06-05` 当 `00:00:00`，会丢掉**最后一个交易日**的全部盘中分钟（首跑只出 4 日，修后 5 日）。新增纯 pandas 单测覆盖归约口径 + float32 tick 回正（`tests/test_qlib_engine.py`，`pytest` 19/19）。
+
+> 说明：当前订单模型是日级（无盘中时间戳），故分钟数据用于**忠实定位会话开/收价 + 日内量能累加**；未来若要盘中择时下单（按分钟时间戳撮合），扩订单模型后让回放走分钟时间轴即可——数据与读取层已就绪。
