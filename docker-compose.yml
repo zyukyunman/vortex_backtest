@@ -1,0 +1,29 @@
+services:
+  vortex-backtest:
+    build: .
+    container_name: vortex-backtest
+    environment:
+      VORTEX_DATA_WORKSPACE: /workspace
+      VORTEX_BACKTEST_STATE_DIR: /state
+      VORTEX_BACKTEST_HOST: ${VORTEX_BACKTEST_HOST:-0.0.0.0}
+      VORTEX_BACKTEST_PORT: ${VORTEX_BACKTEST_PORT:-8765}
+      TZ: ${TZ:-Asia/Shanghai}
+      # 写接口 token（建账户/下单/提交回测）。token 守卫为 design/03 阶段6 待实现；
+      # 在此之前靠默认只绑回环保证安全。
+      VORTEX_BACKTEST_TOKEN: ${VORTEX_BACKTEST_TOKEN:-}
+    ports:
+      # 默认只绑宿主机回环（仅本机可访问）。要对外暴露：把 BIND_ADDR 设为 0.0.0.0，并先实现+配置 token。
+      - "${VORTEX_BACKTEST_BIND_ADDR:-127.0.0.1}:${VORTEX_BACKTEST_PUBLIC_PORT:-8765}:${VORTEX_BACKTEST_PORT:-8765}"
+    volumes:
+      # 数据来自 vortex_data 的导出，只读挂载；整合部署时换成共享 named volume
+      - ${VORTEX_BACKTEST_WORKSPACE:-../vortex_data/workspace}:/workspace:ro
+      - ${VORTEX_BACKTEST_STATE:-./state}:/state
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.getenv('VORTEX_BACKTEST_PORT','8765'), timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

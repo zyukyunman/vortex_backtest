@@ -1,0 +1,49 @@
+[project]
+name = "vortex-backtest"
+version = "0.1.0"
+description = "Independent HTTP backtest/account replay service for Vortex."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "backtrader>=1.9.78",
+    "fastapi>=0.128.0",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "pydantic>=2.7",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8.0",
+]
+sample = [
+    "httpx>=0.27",
+]
+spike = [
+    "pyqlib>=0.9",
+]
+crosscheck = [
+    # 仅用于单测对拍指标口径（empyrical），非运行时依赖；缺失时相关测试自动跳过
+    "empyrical-reloaded>=0.5",
+    "pytz",
+]
+[project.scripts]
+vortex-backtest = "vortex_backtest.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 显式声明包，避免 setuptools 把 design/ spike/ 等根目录当成待打包的包而报错
+packages = ["vortex_backtest"]
+
+[tool.setuptools.package-data]
+# 看板静态资源随包分发（wheel 内也含 web/，含本地化的 Chart.js vendor/）
+vortex_backtest = ["web/*.html", "web/static/*", "web/static/vendor/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
