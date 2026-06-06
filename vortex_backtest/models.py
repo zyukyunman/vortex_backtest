@@ -97,6 +97,17 @@ class OrderOut(OrderCreate):
     created_at: datetime
 
 
+class ExecutionConfig(BaseModel):
+    """可按回测覆盖的撮合/费用参数（P6）。缺省值等于原硬编码值，省略则行为不变。"""
+
+    commission_rate: float = Field(default=0.0003, ge=0)
+    min_commission: float = Field(default=5.0, ge=0)
+    stamp_tax_rate: float = Field(default=0.0005, ge=0)
+    transfer_fee_rate: float = Field(default=0.00001, ge=0)
+    max_volume_participation: float = Field(default=1.0, gt=0, le=1.0)
+    slippage_bps: float = Field(default=0.0, ge=0)
+
+
 class BacktestCreate(BaseModel):
     account_id: str
     order_batch_id: str = Field(default="default", min_length=1, max_length=96)
@@ -108,6 +119,7 @@ class BacktestCreate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     strategies: list[StrategyCreate] = Field(default_factory=list)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
 
 class BacktestJobOut(BaseModel):

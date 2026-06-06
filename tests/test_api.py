@@ -468,6 +468,47 @@ def test_http_backtest_reports_missing_minute_data(tmp_path: Path, monkeypatch) 
     assert job["summary"]["error"] == "minute_data_missing"
 
 
+def test_backtest_create_accepts_execution_config() -> None:
+    from vortex_backtest.models import BacktestCreate
+
+    bt = BacktestCreate.model_validate(
+        {
+            "account_id": "a",
+            "execution": {"commission_rate": 0.001, "slippage_bps": 5, "max_volume_participation": 0.5},
+        }
+    )
+    assert bt.execution.commission_rate == 0.001
+    assert bt.execution.slippage_bps == 5
+    assert bt.execution.max_volume_participation == 0.5
+
+    default_bt = BacktestCreate.model_validate({"account_id": "a"})
+    assert default_bt.execution.commission_rate == 0.0003
+    assert default_bt.execution.slippage_bps == 0.0
+    assert default_bt.execution.max_volume_participation == 1.0
+
+
+def test_write_endpoints_require_token_when_configured(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("VORTEX_BACKTEST_TOKEN", "s3cret")
+    client = TestClient(create_app(tmp_path, run_worker=False))
+
+    # 无 token → 401
+    assert client.post("/accounts", json={"account_id": "a", "initial_cash": 1000}).status_code == 401
+    # 带 token → 201
+    assert client.post(
+        "/accounts",
+        json={"account_id": "a", "initial_cash": 1000},
+        headers={"Authorization": "Bearer s3cret"},
+    ).status_code == 201
+    # 错 token → 401
+    assert client.post(
+        "/accounts",
+        json={"account_id": "b", "initial_cash": 1000},
+        headers={"X-Auth-Token": "wrong"},
+    ).status_code == 401
+    # 读接口不需要 token
+    assert client.get("/accounts").status_code == 200
+
+
 def test_symbol_crosswalk_is_tushare_first_without_rqalpha_surface(tmp_path: Path) -> None:
     client = TestClient(create_app(tmp_path))
 

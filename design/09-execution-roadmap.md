@@ -32,8 +32,11 @@ depends_on: design/03-productization-plan.md, design/02-architecture-decisions.m
 ### P5 · 回测结果看板（推迟，非取消）
 "服务不在于可视化"，但 CLI+协议扎实后再做看板**是有意义的**——因此**推迟**到 P-CLI 之后。`design/04` 规格保留备查；报告先以 JSON/CSV（日级）交付。
 
-### P6 · 强化
-写接口 token 鉴权（建账户/下单/提交回测）+ 错误信息脱敏（M6）；费率/印花税/滑点/参与率可配置（M4）；基准/相对收益（可选）。
+### P6 · 强化（核心已做）✅
+- 写接口 token 鉴权（建账户/下单/提交回测）：配 `VORTEX_BACKTEST_TOKEN` 即强制；未配时仅回环放行、绑非回环 host 则 fail-closed 403。✅
+- 错误脱敏：作业失败只回安全错误码；未知异常脱敏为 `internal_error`，完整堆栈只进服务端日志。✅
+- 撮合参数可按回测覆盖（`BacktestCreate.execution`：费率/印花税/过户费/参与率/滑点）。✅
+- 待选：基准 / 相对收益指标（可选，未做）。
 
 ### P2/P3 · Qlib 引擎迁移 + 数据访问（ADR-1/2）← 待数据侧 P7
 等 `vortex_data` 的 Qlib 导出就绪后：删 backtrader、薄规则层接 Qlib `Exchange`、用 `FileStorage` 直接读盘、跑 `spike` 4 项验收 → 把 ADR-1 转 Accepted。

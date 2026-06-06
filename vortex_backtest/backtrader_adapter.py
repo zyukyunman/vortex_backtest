@@ -94,6 +94,7 @@ class BacktraderMinuteReplayEngine:
         order_price_adjustment: str = "qfq",
         default_price_type: str = "close",
         strategies: list[Mapping[str, Any]] | None = None,
+        execution: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if frequency != "1min":
             raise ValueError("unsupported_frequency")
@@ -126,6 +127,22 @@ class BacktraderMinuteReplayEngine:
             start_date=resolved_start,
             end_date=resolved_end,
         )
+        # 可配置费率/滑点/参与率（P6）：有 execution 就按它构造规则引擎，否则用默认 self.rules
+        if execution:
+            cfg = dict(execution)
+            rules = AShareRuleEngine(
+                fee_model=FeeModel(
+                    commission_rate=float(cfg.get("commission_rate", 0.0003)),
+                    min_commission=float(cfg.get("min_commission", 5.0)),
+                    stamp_tax_rate=float(cfg.get("stamp_tax_rate", 0.0005)),
+                    transfer_fee_rate=float(cfg.get("transfer_fee_rate", 0.00001)),
+                ),
+                max_volume_participation=float(cfg.get("max_volume_participation", 1.0)),
+            )
+            slippage_bps = float(cfg.get("slippage_bps", 0.0))
+        else:
+            rules = self.rules
+            slippage_bps = 0.0
         strategy_summaries = [
             self._run_strategy(
                 strategy=strategy,
@@ -133,6 +150,8 @@ class BacktraderMinuteReplayEngine:
                 minutes=dataset.minutes,
                 calendar=dataset.calendar,
                 default_price_type=default_price_type,
+                rules=rules,
+                slippage_bps=slippage_bps,
             )
             for strategy in resolved_strategies
         ]
@@ -160,6 +179,8 @@ class BacktraderMinuteReplayEngine:
         minutes: pd.DataFrame,
         calendar: list[int],
         default_price_type: str,
+        rules: AShareRuleEngine,
+        slippage_bps: float = 0.0,
     ) -> dict[str, Any]:
         strategy_id = str(strategy["strategy_id"])
         order_batch_id = str(strategy["order_batch_id"])
@@ -208,7 +229,7 @@ class BacktraderMinuteReplayEngine:
                         fill_price = float(row[f"{price_type}_qfq"])
                         raw_fill_price = float(row[price_type])
                         position = positions.setdefault(symbol, Position())
-                        reason = self.rules.validate_order(
+                        reason = rules.validate_order(
                             order=order,
                             bar=row,
                             cash=cash,
@@ -226,7 +247,7 @@ class BacktraderMinuteReplayEngine:
                                 )
                             )
                             continue
-                        executable_quantity = self.rules.executable_quantity(
+                        executable_quantity = rules.executable_quantity(
                             side=int(order["side"]),
                             requested_quantity=int(order["quantity"]),
                             volume=int(row["volume"]),
@@ -243,16 +264,23 @@ class BacktraderMinuteReplayEngine:
                                 )
                             )
                             continue
+                        # 滑点（P6）：买入抬价、卖出压价；默认 0 不变。撮合/估值仍用 qfq 价。
+                        slip = slippage_bps / 1e4
+                        exec_price = (
+                            fill_price * (1 + slip)
+                            if int(order["side"]) == int(Side.BUY)
+                            else fill_price * (1 - slip)
+                        )
                         trade_counter += 1
                         trade, cash = execute_order(
                             strategy_id=strategy_id,
                             trade_number=trade_counter,
                             order=order,
                             quantity=executable_quantity,
-                            price=fill_price,
+                            price=exec_price,
                             cash=cash,
                             position=position,
-                            fee_model=self.rules.fee_model,
+                            fee_model=rules.fee_model,
                         )
                         trades.append(trade)
                         if position.quantity == 0:

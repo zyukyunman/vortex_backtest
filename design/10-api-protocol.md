@@ -46,6 +46,18 @@ GET  /backtests/{job_id}/summary | /daily | /trades | /rejections   -> 取报告
 
 拒单原因枚举：`suspended` / `zero_volume` / `invalid_price_tick` / `invalid_lot_size` / `limit_up_buy_blocked` / `limit_down_sell_blocked` / `insufficient_cash` / `insufficient_position` / `t_plus_1_not_sellable` / `volume_cap_below_lot`。
 
+## 写接口鉴权（P6）
+
+写接口（建账户 / 下单 / 提交回测）：
+- 配了 `VORTEX_BACKTEST_TOKEN` → 请求需带 `Authorization: Bearer <token>` 或 `X-Auth-Token: <token>`，否则 `401`。
+- 未配 token → 仅本机回环放行；绑到非回环 host（如 `0.0.0.0`）时写接口直接 `403`（fail-closed，避免裸暴露）。
+- 作业失败只回安全错误码；未知异常脱敏为 `internal_error`（完整堆栈只在服务端日志）。
+
+## 可配置撮合参数（`execution`，P6）
+
+`POST /backtests` 可带 `execution`（缺省等于原硬编码值，省略则行为不变）：
+`{commission_rate, min_commission, stamp_tax_rate, transfer_fee_rate, max_volume_participation, slippage_bps}`。
+
 ## 命令行 `vortex-backtest`
 
 全局 `--base-url`（默认 `$VORTEX_BACKTEST_BASE_URL` 或 `http://127.0.0.1:8765`）。

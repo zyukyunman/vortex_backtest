@@ -8,11 +8,26 @@ from __future__ import annotations
 
 import threading
 import time
+import traceback
 from typing import Any
 
 from .backtrader_adapter import BacktraderMinuteReplayEngine
 from .models import BacktestCreate, EngineName
 from .store import DataStore
+
+# 可安全回传客户端的领域错误码；其余异常一律脱敏为 internal_error，完整堆栈只进服务端日志。
+SAFE_ERROR_CODES = {
+    "minute_data_missing",
+    "adjustment_data_missing",
+    "market_rules_data_missing",
+    "no_symbols",
+    "start_end_required",
+    "unsupported_frequency",
+    "unsupported_price_adjustment",
+    "unsupported_order_price_adjustment",
+    "unsupported_strategy_type",
+    "missing_request_payload",
+}
 
 
 def engine_for(engine_name: str):
@@ -54,10 +69,15 @@ def run_job(store: DataStore, job: dict[str, Any]) -> None:
             order_price_adjustment=order_price_adjustment.value,
             default_price_type=payload.default_price_type.value,
             strategies=[strategy.model_dump() for strategy in payload.strategies],
+            execution=payload.execution.model_dump(),
         )
         store.complete_job(job_id, report_dir, summary)
     except Exception as exc:  # noqa: BLE001 - 失败原因统一落到作业状态
-        store.fail_job(job_id, str(exc))
+        code = str(exc)
+        if code not in SAFE_ERROR_CODES:
+            traceback.print_exc()  # 完整堆栈只进服务端日志，不外泄客户端
+            code = "internal_error"
+        store.fail_job(job_id, code)
 
 
 def run_pending_once(store: DataStore) -> bool:

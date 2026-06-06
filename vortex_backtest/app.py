@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sqlite3
 import uuid
 from datetime import date
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from .models import (
     AccountCreate,
@@ -32,6 +33,35 @@ def default_state_dir() -> Path:
     if env_value:
         return Path(env_value).expanduser().resolve()
     return (Path.cwd() / ".vortex_backtest").resolve()
+
+
+def require_write_auth(
+    authorization: str | None = Header(default=None),
+    x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
+) -> None:
+    """写接口鉴权：
+    - 配了 `VORTEX_BACKTEST_TOKEN`：必须带匹配 token（`Authorization: Bearer <t>` 或 `X-Auth-Token`）。
+    - 没配 token：仅本机回环放行；绑到非回环 host 时拒绝（fail-closed，避免裸暴露写接口）。
+    """
+    configured = os.getenv("VORTEX_BACKTEST_TOKEN")
+    host = os.getenv("VORTEX_BACKTEST_HOST", "127.0.0.1")
+    is_loopback = host in {"127.0.0.1", "localhost", "::1"}
+    if not configured:
+        if is_loopback:
+            return
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "write_disabled",
+                "hint": "set VORTEX_BACKTEST_TOKEN to enable write endpoints on a non-loopback host",
+            },
+        )
+    presented: str | None = None
+    if authorization and authorization.lower().startswith("bearer "):
+        presented = authorization[7:].strip()
+    presented = presented or x_auth_token
+    if not presented or not secrets.compare_digest(presented, configured):
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
 
 
 def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> FastAPI:
@@ -60,6 +90,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     def create_account(
         payload: AccountCreate,
         data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
     ) -> dict:
         try:
             return normalize_account(data_store.create_account(payload))
@@ -89,6 +120,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         account_id: str,
         payload: OrderCreate,
         data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
     ) -> dict:
         try:
             row = data_store.create_order(account_id, payload)
@@ -124,6 +156,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     def run_backtest(
         payload: BacktestCreate,
         data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
     ) -> dict:
         _get_account_or_404(data_store, payload.account_id)
         order_price_adjustment = payload.order_price_adjustment or payload.price_adjustment
