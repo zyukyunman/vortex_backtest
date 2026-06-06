@@ -24,8 +24,8 @@ def main() -> int:
     p.add_argument("--symbols", default="000001.SZ,600000.SH", help="逗号分隔（vortex 代码，如 600000.SH）")
     p.add_argument("--start", default="2026-01-05")
     p.add_argument("--end", default="2026-06-05")
-    p.add_argument("--freq", default="day", choices=["day", "1min"],
-                   help="day=日级 provider；1min=分钟 provider（引擎归约为日级会话 bar）")
+    p.add_argument("--freq", default="1min", choices=["1min"],
+                   help="回测统一分钟级；引擎把分钟 bar 归约为当日会话 bar")
     p.add_argument("--cash", type=float, default=1_000_000.0)
     p.add_argument("--report-dir", default="/tmp/qlib_engine_report")
     args = p.parse_args()

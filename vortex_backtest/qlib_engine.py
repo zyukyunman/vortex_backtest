@@ -1,14 +1,16 @@
 """Qlib 后端回放引擎（P2/P3，ADR-1）。
 
 把 Qlib 当**数据层**：`qlib.init` 读 vortex_data 导出的 FileStorage，`D.features` 取
-日级 `$open/$close/$factor/$limit_up/$limit_down/$volume/$paused`；撮合与 A 股规则
+分钟级 `$open/$close/$factor/$limit_up/$limit_down/$volume/$paused`；撮合与 A 股规则
 **复用 `market_rules`**（T+1、手数、涨跌停、费用、滑点），产出与自研引擎**同款的日级
 summary**，从而无缝插回现有异步作业 / 日级报告 / CLI。
 
 口径（与自研引擎一致）：
 - vortex_data 导出的 `$close` 是 **raw**，`$factor` 已归一化到该标的全历史最新=1（即 qfq 乘子）。
 - 成交/估值用 **qfq = close*factor**；tick / 用户 limit_price / 涨跌停等合法性对 **raw** 价判定。
-- 当前 qlib 导出是 **day 频**，故按日回放（成交在当日 open/close）。
+- 回测**统一分钟级**：读 1min FileStorage，引擎把分钟 bar 归约为当日会话 bar 后回放
+  （订单是日级 trade_date + open/close；分钟是日线超集，A 股下单总在交易时段内）。
+  不再支持日级回放；非 1min 频率直接拒（`unsupported_frequency`）。
 
 依赖说明：
 - `qlib` **延迟导入**（仅在 run() 内），因此不装 qlib 也能 import 本模块、跑单测；
@@ -115,6 +117,9 @@ class QlibReplayEngine:
         strategies: list[Mapping[str, Any]] | None = None,
         execution: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # 回测统一分钟级：A 股下单总在交易时段内，分钟是日线超集；不再支持日级回放。
+        if str(frequency).lower() not in {"1min", "min", "minute"}:
+            raise ValueError("unsupported_frequency")
         self._init_qlib()
         import pandas as pd
         from qlib.data import D
@@ -128,29 +133,21 @@ class QlibReplayEngine:
             raise ValueError("no_symbols")
 
         codes = sorted(to_qlib_code(symbol) for symbol in all_symbols)
-        qlib_freq = "1min" if str(frequency).lower() in {"1min", "min", "minute"} else "day"
-        # 分钟频必须把 end_time 顶到当日 23:59，否则 qlib 把裸日期当 00:00:00，
-        # 会丢掉最后一个交易日的全部盘中分钟（09:30–15:00 都晚于 00:00）。
-        if qlib_freq == "1min":
-            start_time = f"{resolved_start.isoformat()} 00:00:00"
-            end_time = f"{resolved_end.isoformat()} 23:59:59"
-        else:
-            start_time = resolved_start.isoformat()
-            end_time = resolved_end.isoformat()
+        # 分钟频 end_time 必须顶到当日 23:59:59，否则 qlib 把裸日期当 00:00:00，
+        # 会丢掉最后一个交易日的全部盘中分钟（09:30–15:00 均晚于 00:00）。
         frame = D.features(
             codes,
             _QLIB_FIELDS,
-            start_time=start_time,
-            end_time=end_time,
-            freq=qlib_freq,
+            start_time=f"{resolved_start.isoformat()} 00:00:00",
+            end_time=f"{resolved_end.isoformat()} 23:59:59",
+            freq="1min",
         )
         if frame is None or frame.empty:
             raise ValueError("minute_data_missing")
-        if qlib_freq == "1min":
-            # 订单是日级（trade_date + open/close），把分钟 bar 归约为当日会话 bar：
-            # open=首分钟 / close=末分钟 / high·low=日内极值 / volume=日内累加（量能上限按全日量），
-            # 日级广播字段（factor/涨跌停/paused）整日为常数 → 取末值/极值。
-            frame = _aggregate_minute_to_daily(frame, pd)
+        # 订单是日级（trade_date + open/close），把分钟 bar 归约为当日会话 bar：
+        # open=首分钟 / close=末分钟 / high·low=日内极值 / volume=日内累加（量能上限按全日量），
+        # 日级广播字段（factor/涨跌停/paused）整日为常数 → 取末值/极值。
+        frame = _aggregate_minute_to_daily(frame, pd)
         bars = _bars_by_symbol_date(frame, pd)
         if not bars:
             raise ValueError("minute_data_missing")

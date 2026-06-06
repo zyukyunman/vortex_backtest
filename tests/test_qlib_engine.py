@@ -5,9 +5,14 @@ qlib 仅在 run() 内惰性 import，故这些函数本机可测。
 """
 from __future__ import annotations
 
+from datetime import date
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 from vortex_backtest.qlib_engine import (
+    QlibReplayEngine,
     _aggregate_minute_to_daily,
     _bars_by_symbol_date,
     from_qlib_code,
@@ -72,3 +77,23 @@ def test_bars_from_aggregated_minutes_round_and_qfq() -> None:
     # qlib float32 存价（11.8199996…）末分钟 close → round(2) 回 11.82，过 tick
     b2 = bars[("600000.SH", 20260602)]
     assert b2["close"] == 11.82
+
+
+def test_run_rejects_non_minute_frequency() -> None:
+    """回测统一分钟级：非 1min 频率在 run() 顶部即拒（早于 qlib import，故本机可测）。"""
+    eng = QlibReplayEngine(provider_uri="/nonexistent")
+    with pytest.raises(ValueError, match="unsupported_frequency"):
+        eng.run(
+            job_id="j",
+            account={"account_id": "a", "initial_cash": 1_000_000.0, "engine": "qlib"},
+            orders=[],
+            report_dir=Path("/tmp/vbt_qlib_freq_guard"),
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 5),
+            strategies=[{
+                "strategy_id": "s", "strategy_type": "order_replay",
+                "initial_cash": 1_000_000.0, "symbols": ["600000.SH"], "params": {},
+            }],
+            frequency="day",
+            execution={},
+        )
