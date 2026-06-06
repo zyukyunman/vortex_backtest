@@ -41,8 +41,8 @@ build-backend = "setuptools.build_meta"
 packages = ["vortex_backtest"]
 
 [tool.setuptools.package-data]
-# 看板静态资源随包分发（wheel 内也含 web/）
-vortex_backtest = ["web/*.html", "web/static/*"]
+# 看板静态资源随包分发（wheel 内也含 web/，含本地化的 Chart.js vendor/）
+vortex_backtest = ["web/*.html", "web/static/*", "web/static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

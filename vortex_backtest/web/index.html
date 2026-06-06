@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>vortex_backtest 看板</title>
   <link rel="stylesheet" href="static/app.css" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+  <!-- 本地化(不依赖 CDN/代理)；缺失时 app.js 退到内联 SVG。重新下载见 scripts/vendor-chart.sh -->
+  <script src="static/vendor/chart.umd.min.js"></script>
+  <script src="static/vendor/chartjs-plugin-zoom.min.js"></script>
 </head>
 <body>
   <header class="topbar">
