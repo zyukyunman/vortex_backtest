@@ -126,6 +126,7 @@ class BacktestJobOut(BaseModel):
     completed_at: datetime | None = None
     report_dir: Path | None = None
     summary: dict[str, Any] | None = None
+    progress: dict[str, Any] | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

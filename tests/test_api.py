@@ -13,6 +13,7 @@ from vortex_backtest.data_adapter import TushareMinuteDataLoader
 from vortex_backtest.market_rules import AShareRuleEngine
 from vortex_backtest.models import Side
 from vortex_backtest.store import DataStore
+from vortex_backtest.worker import drain_jobs
 
 
 def write_workspace(
@@ -339,7 +340,7 @@ def test_http_backtest_runs_independent_minute_strategies(tmp_path: Path, monkey
     workspace = tmp_path / "workspace"
     write_workspace(workspace, symbols=("000001.SZ", "688809.SH"))
     monkeypatch.setenv("VORTEX_DATA_WORKSPACE", str(workspace))
-    client = TestClient(create_app(tmp_path / "state"))
+    client = TestClient(create_app(tmp_path / "state", run_worker=False))
 
     assert client.post(
         "/accounts",
@@ -410,8 +411,12 @@ def test_http_backtest_runs_independent_minute_strategies(tmp_path: Path, monkey
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 202
     job = response.json()
+    assert job["status"] == "queued"
+
+    drain_jobs(client.app.state.store)
+    job = client.get(f"/backtests/{job['job_id']}").json()
     assert job["status"] == "completed"
 
     summary = client.get(f"/backtests/{job['job_id']}/summary").json()
@@ -437,7 +442,7 @@ def test_http_backtest_reports_missing_minute_data(tmp_path: Path, monkeypatch) 
     workspace = tmp_path / "workspace"
     write_workspace(workspace, include_minutes=False)
     monkeypatch.setenv("VORTEX_DATA_WORKSPACE", str(workspace))
-    client = TestClient(create_app(tmp_path / "state"))
+    client = TestClient(create_app(tmp_path / "state", run_worker=False))
     client.post("/accounts", json={"account_id": "acct", "initial_cash": 10000})
 
     response = client.post(
@@ -456,8 +461,11 @@ def test_http_backtest_reports_missing_minute_data(tmp_path: Path, monkeypatch) 
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"]["error"] == "minute_data_missing"
+    assert response.status_code == 202
+    drain_jobs(client.app.state.store)
+    job = client.get(f"/backtests/{response.json()['job_id']}").json()
+    assert job["status"] == "failed"
+    assert job["summary"]["error"] == "minute_data_missing"
 
 
 def test_symbol_crosswalk_is_tushare_first_without_rqalpha_surface(tmp_path: Path) -> None:

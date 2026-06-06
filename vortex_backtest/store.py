@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at TEXT,
     report_dir TEXT,
     summary_json TEXT,
+    request_json TEXT,
+    progress_json TEXT,
     FOREIGN KEY(account_id) REFERENCES accounts(account_id)
 );
 """
@@ -171,6 +173,10 @@ class DataStore:
             )
         if "default_price_type" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN default_price_type TEXT NOT NULL DEFAULT 'close'")
+        if "request_json" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN request_json TEXT")
+        if "progress_json" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN progress_json TEXT")
 
     def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -178,6 +184,9 @@ class DataStore:
             CREATE INDEX IF NOT EXISTS idx_orders_account_batch_date
             ON orders(account_id, order_batch_id, trade_date, id)
             """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)"
         )
 
     def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -307,7 +316,9 @@ class DataStore:
         default_price_type: str,
         start_date: date | None,
         end_date: date | None,
+        request_json: str | None = None,
     ) -> dict[str, Any]:
+        # 入队（异步作业模型，ADR-3）：建作业即为 'queued'，由后台 worker 领取执行。
         created_at = encode_dt(utc_now())
         with self.connect() as conn:
             conn.execute(
@@ -315,9 +326,9 @@ class DataStore:
                 INSERT INTO jobs(
                     job_id, account_id, order_batch_id, market_data_set_id,
                     frequency, price_adjustment, order_price_adjustment, default_price_type,
-                    status, start_date, end_date, created_at
+                    status, start_date, end_date, created_at, request_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -331,9 +342,40 @@ class DataStore:
                     start_date.isoformat() if start_date else None,
                     end_date.isoformat() if end_date else None,
                     created_at,
+                    request_json,
                 ),
             )
         return self.get_job(job_id)
+
+    def claim_next_queued_job(self) -> dict[str, Any] | None:
+        """原子领取一个 queued 作业并置为 running；无则返回 None。"""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT job_id FROM jobs WHERE status = 'queued' ORDER BY created_at, job_id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            job_id = str(row["job_id"])
+            cursor = conn.execute(
+                "UPDATE jobs SET status = 'running' WHERE job_id = ? AND status = 'queued'",
+                (job_id,),
+            )
+            if cursor.rowcount != 1:
+                return None
+        return self.get_job(job_id)
+
+    def update_progress(self, job_id: str, progress: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET progress_json = ? WHERE job_id = ?",
+                (json.dumps(progress, ensure_ascii=False), job_id),
+            )
+
+    def requeue_interrupted(self) -> int:
+        """启动时把上次残留的 running 作业重新入队（worker 崩溃恢复）。返回重排数量。"""
+        with self.connect() as conn:
+            cursor = conn.execute("UPDATE jobs SET status = 'queued' WHERE status = 'running'")
+            return int(cursor.rowcount)
 
     def complete_job(self, job_id: str, report_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
         completed_at = encode_dt(utc_now())
@@ -449,4 +491,5 @@ def normalize_job(row: dict[str, Any]) -> dict[str, Any]:
         "completed_at": parse_dt(row["completed_at"]) if row["completed_at"] else None,
         "report_dir": Path(row["report_dir"]) if row["report_dir"] else None,
         "summary": json.loads(summary_json) if summary_json else None,
+        "progress": json.loads(row["progress_json"]) if row.get("progress_json") else None,
     }

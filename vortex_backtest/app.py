@@ -24,9 +24,9 @@ from .models import (
     SymbolCrosswalkOut,
     TradeOut,
 )
-from .backtrader_adapter import BacktraderMinuteReplayEngine
 from .store import DataStore, normalize_account, normalize_job, normalize_order
 from .symbols import crosswalk
+from .worker import JobWorker
 
 
 def default_state_dir() -> Path:
@@ -36,13 +36,20 @@ def default_state_dir() -> Path:
     return (Path.cwd() / ".vortex_backtest").resolve()
 
 
-def create_app(state_dir: Path | None = None) -> FastAPI:
+def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> FastAPI:
     store = DataStore(state_dir or default_state_dir())
     app = FastAPI(
         title="Vortex Backtest Service",
         version="0.1.0",
         description="HTTP service for account-scoped A-share order replay backtests.",
     )
+    app.state.store = store
+    # 崩溃恢复：把上次残留的 running 作业重排回 queued（ADR-3）
+    store.requeue_interrupted()
+    if run_worker:
+        worker = JobWorker(store)
+        worker.start()
+        app.state.worker = worker
 
     def get_store() -> DataStore:
         return store
@@ -115,14 +122,22 @@ def create_app(state_dir: Path | None = None) -> FastAPI:
             )
         ]
 
-    @app.post("/backtests", response_model=BacktestJobOut, status_code=201)
+    @app.post("/backtests", response_model=BacktestJobOut, status_code=202)
     def run_backtest(
         payload: BacktestCreate,
         data_store: DataStore = Depends(get_store),
     ) -> dict:
-        account = _get_account_or_404(data_store, payload.account_id)
-        job_id = str(uuid.uuid4())
+        _get_account_or_404(data_store, payload.account_id)
         order_price_adjustment = payload.order_price_adjustment or payload.price_adjustment
+        # 同步校验：不支持的参数立即 400（不入队）
+        if payload.frequency != "1min":
+            raise HTTPException(status_code=400, detail={"error": "unsupported_frequency"})
+        if payload.price_adjustment.value != "qfq":
+            raise HTTPException(status_code=400, detail={"error": "unsupported_price_adjustment"})
+        if order_price_adjustment.value != "qfq":
+            raise HTTPException(status_code=400, detail={"error": "unsupported_order_price_adjustment"})
+        # 入队，后台 worker 执行（ADR-3）：立即返回 202 + job_id，客户端轮询状态
+        job_id = str(uuid.uuid4())
         data_store.create_job(
             job_id,
             payload.account_id,
@@ -134,45 +149,9 @@ def create_app(state_dir: Path | None = None) -> FastAPI:
             payload.default_price_type.value,
             payload.start_date,
             payload.end_date,
+            request_json=payload.model_dump_json(),
         )
-        orders = data_store.list_orders(
-            payload.account_id,
-            order_batch_id=None if payload.strategies else payload.order_batch_id,
-            start_date=payload.start_date,
-            end_date=payload.end_date,
-        )
-        if payload.frequency != "1min":
-            row = data_store.fail_job(job_id, "unsupported_frequency")
-            raise HTTPException(status_code=400, detail=normalize_job(row)["summary"])
-        if payload.price_adjustment.value != "qfq":
-            row = data_store.fail_job(job_id, "unsupported_price_adjustment")
-            raise HTTPException(status_code=400, detail=normalize_job(row)["summary"])
-        if order_price_adjustment.value != "qfq":
-            row = data_store.fail_job(job_id, "unsupported_order_price_adjustment")
-            raise HTTPException(status_code=400, detail=normalize_job(row)["summary"])
-        report_dir = data_store.report_root / job_id
-        try:
-            engine = _engine_for(account["engine"])
-            summary = engine.run(
-                job_id=job_id,
-                account=account,
-                orders=orders,
-                report_dir=report_dir,
-                start_date=payload.start_date,
-                end_date=payload.end_date,
-                order_batch_id=payload.order_batch_id,
-                market_data_set_id=payload.market_data_set_id,
-                frequency=payload.frequency,
-                price_adjustment=payload.price_adjustment.value,
-                order_price_adjustment=order_price_adjustment.value,
-                default_price_type=payload.default_price_type.value,
-                strategies=[strategy.model_dump() for strategy in payload.strategies],
-            )
-            row = data_store.complete_job(job_id, report_dir, summary)
-        except Exception as exc:
-            row = data_store.fail_job(job_id, str(exc))
-            raise HTTPException(status_code=400, detail=normalize_job(row)["summary"]) from exc
-        return normalize_job(row)
+        return normalize_job(data_store.get_job(job_id))
 
     @app.get("/backtests", response_model=list[BacktestJobOut])
     def list_backtests(
@@ -296,13 +275,6 @@ def _completed_summary_or_404(data_store: DataStore, job_id: str) -> dict:
     if job["status"] != "completed" or not job["summary"]:
         raise HTTPException(status_code=404, detail="completed summary not found")
     return job["summary"]
-
-
-def _engine_for(engine_name: str):
-    engine = EngineName(engine_name)
-    if engine == EngineName.BACKTRADER:
-        return BacktraderMinuteReplayEngine()
-    raise ValueError(f"unsupported engine: {engine_name}")
 
 
 app = create_app()
