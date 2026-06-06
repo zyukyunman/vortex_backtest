@@ -56,3 +56,8 @@ tr.row:hover{background:var(--surface)}
 .note{font-size:11px;color:var(--muted);margin-top:8px}
 .cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
 @media(max-width:760px){.metricgrid{grid-template-columns:1fr}}
+.crumbs a.on{color:var(--text)}
+.rk{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;background:var(--surface);color:var(--muted)}
+.rk1{background:rgba(180,83,9,.18);color:var(--warn)}
+.tag{font-size:11px;padding:1px 7px;border-radius:6px;background:var(--surface);color:var(--muted);margin-left:4px}
+.lbrow:hover,.strow:hover,.lbrow2:hover,.runrow:hover{background:var(--surface)}

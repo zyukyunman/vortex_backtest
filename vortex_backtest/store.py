@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress_json TEXT,
     FOREIGN KEY(account_id) REFERENCES accounts(account_id)
 );
+CREATE TABLE IF NOT EXISTS strategy_meta (
+    account_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    favorite INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    tags TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(account_id, strategy_id)
+);
 """
 
 
@@ -458,6 +467,50 @@ class DataStore:
                 f"SELECT * FROM jobs {where} ORDER BY created_at DESC", params
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_strategy_meta(self, account_id: str) -> dict[str, dict[str, Any]]:
+        """{strategy_id: {favorite, pinned, tags[]}}（看板的收藏/置顶/标签,非策略定义）。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_meta WHERE account_id = ?", (account_id,)
+            ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            out[str(row["strategy_id"])] = {
+                "favorite": bool(row["favorite"]),
+                "pinned": bool(row["pinned"]),
+                "tags": json.loads(row["tags"]) if row["tags"] else [],
+            }
+        return out
+
+    def set_strategy_meta(
+        self,
+        account_id: str,
+        strategy_id: str,
+        *,
+        favorite: bool | None = None,
+        pinned: bool | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_strategy_meta(account_id).get(
+            strategy_id, {"favorite": False, "pinned": False, "tags": []}
+        )
+        fav = current["favorite"] if favorite is None else bool(favorite)
+        pin = current["pinned"] if pinned is None else bool(pinned)
+        tag = current["tags"] if tags is None else [str(t) for t in tags]
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO strategy_meta(account_id, strategy_id, favorite, pinned, tags, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, strategy_id) DO UPDATE SET
+                    favorite = excluded.favorite, pinned = excluded.pinned,
+                    tags = excluded.tags, updated_at = excluded.updated_at
+                """,
+                (account_id, strategy_id, int(fav), int(pin),
+                 json.dumps(tag, ensure_ascii=False), encode_dt(utc_now())),
+            )
+        return {"favorite": fav, "pinned": pin, "tags": tag}
 
 
 def normalize_account(row: dict[str, Any]) -> dict[str, Any]:

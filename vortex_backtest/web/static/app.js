@@ -9,8 +9,9 @@
   var crumbs = document.getElementById('crumbs');
   var srLive = document.getElementById('sr');
   var root = document.documentElement;
-  var state = { benchmark: '000300.SH', page: {}, reasonFilter: '', jobId: null };
+  var state = { benchmark: '000300.SH', page: {}, reasonFilter: '', jobId: null, lbMetric: 'total_return', lbScope: 'best' };
   var PAGE = 25;
+  var ACCOUNT = 'demo';  // 看板账户上下文(种子账户;后续可加账户选择器)
   var charts = [];
 
   function applyTheme(mode) {
@@ -123,6 +124,48 @@
     }
     return jh('/backtests/' + id + '/rejections?limit=' + q.limit + '&offset=' + q.offset + (q.reason ? '&reason=' + encodeURIComponent(q.reason) : ''));
   };
+  function jput(url, body) {
+    return fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+  }
+
+  // ---- 策略中心 mock(壳脱机时用) ----
+  MOCK.strategies = [
+    { strategy_id: 'momentum-v3', n_runs: 14, running: true, last_run_at: '2026-06-06T09:00:00', board: 'main', favorite: true, pinned: true, tags: ['核心'], symbols: ['600000.SH', '000001.SZ'],
+      latest: { job_id: 'j14', status: 'running', total_return: 0.032, max_drawdown: -0.018, sharpe: 1.7, created_at: '2026-06-06T09:00:00', progress: { pct: 0.62, trading_day: '2026-02-10' } },
+      best: { job_id: 'j9', status: 'completed', total_return: 0.246, sharpe: 1.92, calmar: 3.9, max_drawdown: -0.061, created_at: '2026-05-20T00:00:00' } },
+    { strategy_id: 'mean-rev-a', n_runs: 9, running: false, last_run_at: '2026-06-06T07:00:00', board: '混合', favorite: false, pinned: false, tags: [], symbols: ['000001.SZ'],
+      latest: { job_id: 'j9b', status: 'completed', total_return: 0.124, max_drawdown: -0.04, sharpe: 1.5, created_at: '2026-06-06T07:00:00' },
+      best: { job_id: 'j7b', status: 'completed', total_return: 0.181, sharpe: 1.64, calmar: 3.1, max_drawdown: -0.058, created_at: '2026-05-28T00:00:00' } },
+    { strategy_id: 'star-growth', n_runs: 7, running: true, last_run_at: '2026-06-05T13:00:00', board: 'star', favorite: false, pinned: false, tags: ['科创'], symbols: ['688169.SH'],
+      latest: { job_id: 'j7s', status: 'running', total_return: 0.009, max_drawdown: -0.012, sharpe: 1.0, created_at: '2026-06-05T13:00:00', progress: { pct: 0.28, trading_day: '2026-01-19' } },
+      best: { job_id: 'j5s', status: 'completed', total_return: 0.153, sharpe: 1.38, calmar: 2.4, max_drawdown: -0.064, created_at: '2026-05-22T00:00:00' } },
+    { strategy_id: 'vol-target-b', n_runs: 5, running: false, last_run_at: '2026-06-03T00:00:00', board: 'main', favorite: false, pinned: false, tags: [], symbols: ['600000.SH'],
+      latest: { job_id: 'j5v', status: 'completed', total_return: -0.021, max_drawdown: -0.052, sharpe: 0.71, created_at: '2026-06-03T00:00:00' },
+      best: { job_id: 'j2v', status: 'completed', total_return: 0.064, sharpe: 1.1, calmar: 1.3, max_drawdown: -0.049, created_at: '2026-05-30T00:00:00' } }
+  ];
+  function _scopeVal(s, scope, metric) { var src = (scope === 'latest' ? s.latest : s.best) || {}; return src[metric]; }
+  function mockLeaderboard(metric, scope) {
+    return MOCK.strategies.map(function (s) { return { strategy_id: s.strategy_id, metric: metric, scope: scope, value: _scopeVal(s, scope, metric), board: s.board, n_runs: s.n_runs, favorite: s.favorite }; })
+      .filter(function (r) { return r.value != null; }).sort(function (a, b) { return b.value - a.value; });
+  }
+  function mockStrategyDetail(id) {
+    var s = MOCK.strategies.filter(function (x) { return x.strategy_id === id; })[0] || MOCK.strategies[0];
+    var runs = [s.latest, s.best, { job_id: 'jx', status: 'completed', total_return: 0.052, max_drawdown: -0.03, sharpe: 1.1, created_at: '2026-05-10T00:00:00', start_date: '2026-01-05', end_date: '2026-03-31' }];
+    return Object.assign({}, s, { runs: runs, equity: MOCK.equity });
+  }
+  function mockCompare(ids) {
+    var list = String(ids).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    return { strategies: list.map(function (sid, i) {
+      var s = MOCK.strategies.filter(function (x) { return x.strategy_id === sid; })[0] || MOCK.strategies[i % MOCK.strategies.length];
+      return { strategy_id: sid, latest: s.latest, best: s.best, equity: { dates: DATES, equity: genSeries(N, 0.001 + i * 0.0006, 0.012, 7 + i * 5), rebase: true } };
+    }), benchmark: state.benchmark };
+  }
+  api.strategies = function (metric) { return pick('/strategies?account_id=' + ACCOUNT + '&best_metric=' + (metric || 'total_return'), MOCK.strategies); };
+  api.strategy = function (id, bm) { return pick('/strategies/' + encodeURIComponent(id) + '?account_id=' + ACCOUNT + (bm ? '&benchmark=' + bm : ''), mockStrategyDetail(id)); };
+  api.leaderboard = function (metric, scope) { return pick('/leaderboard?account_id=' + ACCOUNT + '&metric=' + metric + '&scope=' + scope, mockLeaderboard(metric, scope)); };
+  api.compareStrategies = function (ids, bm) { return pick('/strategies/compare?account_id=' + ACCOUNT + '&ids=' + encodeURIComponent(ids) + (bm ? '&benchmark=' + bm : ''), mockCompare(ids)); };
+  api.setMeta = function (id, patch) { return FORCE === 'mock' ? Promise.resolve(patch) : jput('/strategies/' + encodeURIComponent(id) + '/meta?account_id=' + ACCOUNT, patch); };
 
   function badge(st, prog) {
     var p = (st === 'running' && prog) ? ' ' + Math.round(prog.pct * 100) + '%' : '';
@@ -153,7 +196,7 @@
 
   function renderList() {
     destroyCharts();
-    setCrumbs([{ t: '回测历史' }]);
+    setNav('runs');
     api.list().then(function (jobs) {
       var rows = jobs.map(function (jb) {
         var s = jb.summary || {};
@@ -392,7 +435,7 @@
   function renderOverview(id, tab) {
     destroyCharts();
     state.jobId = id;
-    setCrumbs([{ t: '回测历史', h: '#/' }, { t: id }]);
+    setNav('runs');
     var bm = state.benchmark || '';
     if (tab === 'overview') {
       Promise.all([api.equity(id, bm), api.metrics(id, bm), api.rejsum(id)]).then(function (res) {
@@ -412,10 +455,229 @@
     });
   }
 
+  var cmpSel = {};
+  var METRIC_LABEL = { total_return: '收益', annual_return: '年化', sharpe: 'Sharpe', sortino: 'Sortino', calmar: 'Calmar', annual_volatility: '波动', max_drawdown: '回撤' };
+  function isPctMetric(m) { return ['total_return', 'annual_return', 'annual_volatility', 'max_drawdown'].indexOf(m) >= 0; }
+  function fmtMetric(m, v) { return v == null ? '—' : (isPctMetric(m) ? pct(v) : fix(v)); }
+  function statusBadgeCls(st) { return st === 'completed' ? 'b-completed' : st === 'running' ? 'b-running' : st === 'failed' ? 'b-failed' : 'b-queued'; }
+  function setNav(active) {
+    var items = [['home', '#/', '首页'], ['leaderboard', '#/leaderboard', '排行榜'], ['runs', '#/runs', '全部回测']];
+    crumbs.innerHTML = '<span style="font-weight:500">vortex_backtest</span>' + items.map(function (it) {
+      return '<span style="color:var(--muted)">·</span><a href="' + it[1] + '"' + (it[0] === active ? ' class="on"' : '') + '>' + it[2] + '</a>';
+    }).join(' ');
+  }
+
+  function renderHome() {
+    destroyCharts(); setNav('home');
+    Promise.all([api.strategies('total_return'), api.leaderboard(state.lbMetric, state.lbScope)]).then(function (res) {
+      var strs = res[0] || [], lb = res[1] || [];
+      var running = strs.filter(function (s) { return s.running; });
+      var now = Date.now();
+      var recent7 = strs.filter(function (s) { return s.last_run_at && (now - Date.parse(s.last_run_at)) < 7 * 864e5; }).length;
+      var best = strs.map(function (s) { return (s.best && s.best.total_return != null) ? s.best.total_return : null; }).filter(function (v) { return v != null; });
+      var bestRet = best.length ? Math.max.apply(null, best) : null;
+      var kpis = '<div class="kpis" style="margin-bottom:12px">' +
+        '<div class="kpi"><div class="l">我的策略</div><div class="v mono">' + strs.length + '</div></div>' +
+        '<div class="kpi"><div class="l">运行中</div><div class="v mono" style="color:var(--running)">' + running.length + '</div></div>' +
+        '<div class="kpi"><div class="l">近 7 天活跃</div><div class="v mono">' + recent7 + '</div></div>' +
+        '<div class="kpi"><div class="l">历史最优收益</div><div class="v mono profit">' + (bestRet == null ? '—' : pct(bestRet)) + '</div></div></div>';
+      app.innerHTML = kpis + '<div class="cols2">' + leaderboardCard(lb) + runningCard(running) + '</div>' + myStrategiesCard(strs) + activityCard(strs);
+      wireHome();
+      if (srLive) srLive.textContent = '策略首页:' + strs.length + ' 个策略,' + running.length + ' 个运行中。';
+    });
+  }
+
+  function leaderboardCard(lb) {
+    var mopts = Object.keys(METRIC_LABEL).map(function (m) { return '<option value="' + m + '"' + (m === state.lbMetric ? ' selected' : '') + '>' + METRIC_LABEL[m] + '</option>'; }).join('');
+    var sopts = [['best', '最优'], ['latest', '最新']].map(function (s) { return '<option value="' + s[0] + '"' + (s[0] === state.lbScope ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('');
+    var rows = lb.slice(0, 8).map(function (r, i) {
+      return '<div class="row lbrow" data-id="' + esc(r.strategy_id) + '" style="display:flex;align-items:center;gap:10px;border-radius:6px;padding:3px 4px;cursor:pointer">' +
+        '<span class="rk' + (i === 0 ? ' rk1' : '') + '">' + (i + 1) + '</span>' +
+        '<span style="flex:1" class="mono">' + esc(r.strategy_id) + (r.favorite ? ' ★' : '') + '</span>' +
+        '<span class="tag">' + esc(r.board || '') + '</span>' +
+        '<span class="mono ' + (isPctMetric(r.metric) ? cls(r.value) : '') + '" style="width:64px;text-align:right">' + fmtMetric(r.metric, r.value) + '</span></div>';
+    }).join('') || '<p class="note">暂无可排名策略</p>';
+    return '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+      '<span style="font-weight:500">排行榜</span><span style="display:flex;gap:6px">' +
+      '<select id="lbmetric" aria-label="排行指标">' + mopts + '</select><select id="lbscope" aria-label="范围">' + sopts + '</select></span></div>' + rows + '</div>';
+  }
+
+  function runningCard(running) {
+    if (!running.length) return '<div class="card"><div style="font-weight:500;margin-bottom:10px">运行中</div><p class="note">当前无运行中的策略</p></div>';
+    var rows = running.map(function (s) {
+      var L = s.latest || {}, pg = L.progress || {}, pc = Math.round((pg.pct || 0) * 100);
+      return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between"><a class="mono" href="#/strategy/' + encodeURIComponent(s.strategy_id) + '">' + esc(s.strategy_id) + '</a><span class="mono ' + cls(L.total_return) + '">' + pct(L.total_return) + '</span></div>' +
+        '<div style="height:6px;border-radius:4px;background:var(--surface);margin-top:4px"><div style="height:6px;width:' + pc + '%;border-radius:4px;background:var(--running)"></div></div>' +
+        '<div class="note" style="margin-top:2px">' + (pg.trading_day ? '当前交易日 ' + pg.trading_day + ' · ' : '') + pc + '%</div></div>';
+    }).join('');
+    return '<div class="card"><div style="font-weight:500;margin-bottom:10px">运行中</div>' + rows + '</div>';
+  }
+
+  function myStrategiesCard(strs) {
+    var rows = strs.map(function (s) {
+      var L = s.latest || {}, B = s.best || {};
+      var status = s.running ? '运行中' : (L.status || '—');
+      var checked = cmpSel[s.strategy_id] ? ' checked' : '';
+      var star = '<button class="star" data-id="' + esc(s.strategy_id) + '" aria-label="收藏" style="border:none;background:none;cursor:pointer;font-size:14px;color:' + (s.favorite ? 'var(--warn)' : 'var(--muted)') + '">★</button>';
+      var pin = s.pinned ? ' <span class="tag">置顶</span>' : '';
+      var tags = (s.tags || []).map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('');
+      return '<tr class="row strow" data-id="' + esc(s.strategy_id) + '" style="cursor:pointer">' +
+        '<td><input type="checkbox" class="cmpck" data-id="' + esc(s.strategy_id) + '"' + checked + ' aria-label="选入对比"></td>' +
+        '<td>' + star + ' <span class="mono">' + esc(s.strategy_id) + '</span>' + pin + tags + '</td>' +
+        '<td><span class="badge ' + statusBadgeCls(status === '运行中' ? 'running' : status) + '">' + status + '</span></td>' +
+        '<td class="num ' + cls(L.total_return) + '">' + pct(L.total_return) + '</td>' +
+        '<td class="num profit">' + pct(B.total_return) + '</td>' +
+        '<td class="num">' + fix(B.sharpe) + '</td><td class="num">' + s.n_runs + '</td><td>' + esc(s.board || '') + '</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="muted">还没有策略 — 用 API 跑一次回测它就会出现</td></tr>';
+    return '<div class="card"><div style="font-weight:500;margin-bottom:8px">我的策略</div>' +
+      '<table><thead><tr><th style="width:28px"></th><th>策略</th><th>状态</th><th class="num">最新收益</th><th class="num">最优收益</th><th class="num">最优Sharpe</th><th class="num">次数</th><th>板块</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div style="margin-top:10px;display:flex;align-items:center;gap:10px"><button id="cmpbtn">对比选中 →</button><span id="cmpsel" class="note"></span></div></div>';
+  }
+
+  function activityCard(strs) {
+    var acts = strs.map(function (s) { return { id: s.strategy_id, at: s.last_run_at, L: s.latest || {} }; })
+      .filter(function (a) { return a.at; }).sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); }).slice(0, 6);
+    var rows = acts.map(function (a) {
+      var L = a.L, verb = (L.status === 'running' ? '运行中' : '完成');
+      var ret = (L.status === 'completed' && L.total_return != null) ? ' · <span class="' + cls(L.total_return) + '">' + pct(L.total_return) + '</span>' : '';
+      return '<div style="display:flex;gap:10px"><span class="mono muted" style="width:120px">' + String(a.at).slice(0, 16).replace('T', ' ') + '</span><span><a class="mono" href="#/strategy/' + encodeURIComponent(a.id) + '">' + esc(a.id) + '</a> ' + verb + ret + '</span></div>';
+    }).join('') || '<p class="note">暂无活动</p>';
+    return '<div class="card"><div style="font-weight:500;margin-bottom:10px">近期活动</div><div style="display:flex;flex-direction:column;gap:8px;font-size:13px">' + rows + '</div></div>';
+  }
+
+  function wireHome() {
+    Array.prototype.forEach.call(app.querySelectorAll('.strow'), function (tr) {
+      tr.addEventListener('click', function (e) {
+        if (e.target.closest('.star') || e.target.closest('.cmpck')) return;
+        location.hash = '#/strategy/' + encodeURIComponent(tr.dataset.id);
+      });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll('.lbrow'), function (el) {
+      el.addEventListener('click', function () { location.hash = '#/strategy/' + encodeURIComponent(el.dataset.id); });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll('.star'), function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        api.setMeta(b.dataset.id, { favorite: true }).then(renderHome).catch(function () {});
+      });
+    });
+    var ck = app.querySelectorAll('.cmpck');
+    function refreshSel() {
+      var ids = Object.keys(cmpSel).filter(function (k) { return cmpSel[k]; });
+      var el = document.getElementById('cmpsel'); if (el) el.textContent = ids.length ? ('已选 ' + ids.length + ': ' + ids.join(', ')) : '勾选 ≥2 个策略对比';
+    }
+    Array.prototype.forEach.call(ck, function (c) { c.addEventListener('change', function () { cmpSel[c.dataset.id] = c.checked; refreshSel(); }); });
+    refreshSel();
+    var cmpbtn = document.getElementById('cmpbtn');
+    if (cmpbtn) cmpbtn.addEventListener('click', function () {
+      var ids = Object.keys(cmpSel).filter(function (k) { return cmpSel[k]; });
+      if (ids.length < 2) { alert('请勾选至少 2 个策略'); return; }
+      location.hash = '#/compare?ids=' + encodeURIComponent(ids.join(','));
+    });
+    var lm = document.getElementById('lbmetric'), ls = document.getElementById('lbscope');
+    if (lm) lm.addEventListener('change', function () { state.lbMetric = lm.value; renderHome(); });
+    if (ls) ls.addEventListener('change', function () { state.lbScope = ls.value; renderHome(); });
+  }
+
+  function renderStrategyDetail(id) {
+    destroyCharts(); setNav('');
+    api.strategy(id, state.benchmark).then(function (s) {
+      var L = s.latest || {}, B = s.best || {};
+      var header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<div><a href="#/" class="note">← 我的策略</a><div style="font-size:18px;font-weight:500" class="mono">' + esc(id) + '</div>' +
+        '<div class="note">' + (s.board || '') + ' · ' + (s.n_runs || 0) + ' 次回测 · ' + (s.symbols || []).join(', ') + '</div></div>' +
+        '<div style="display:flex;gap:8px"><button id="favbtn">' + (s.favorite ? '★ 已收藏' : '☆ 收藏') + '</button><button id="pinbtn">' + (s.pinned ? '取消置顶' : '置顶') + '</button></div></div>';
+      var cards = '<div class="kpis" style="margin-bottom:12px">' +
+        '<div class="kpi"><div class="l">最新收益</div><div class="v mono ' + cls(L.total_return) + '">' + pct(L.total_return) + '</div></div>' +
+        '<div class="kpi"><div class="l">最优收益</div><div class="v mono profit">' + pct(B.total_return) + '</div></div>' +
+        '<div class="kpi"><div class="l">最优Sharpe</div><div class="v mono">' + fix(B.sharpe) + '</div></div>' +
+        '<div class="kpi"><div class="l">最优Calmar</div><div class="v mono">' + fix(B.calmar) + '</div></div>' +
+        '<div class="kpi"><div class="l">最新回撤</div><div class="v mono loss">' + pct(L.max_drawdown) + '</div></div></div>';
+      var chart = s.equity ? '<div class="card"><div style="font-weight:500;margin-bottom:8px">最新一次净值 · 归一到 100' + (state.benchmark ? ' · 对标 ' + state.benchmark : '') + '</div><div style="height:260px"><canvas id="eq"></canvas></div><div style="height:90px;margin-top:6px"><canvas id="dd"></canvas></div></div>' : '';
+      var runs = (s.runs || []).map(function (r) {
+        return '<tr class="row runrow" data-job="' + esc(r.job_id || '') + '" style="cursor:pointer"><td class="mono">' + String(r.created_at || '').slice(0, 10) + '</td>' +
+          '<td class="mono">' + (r.start_date || '') + '→' + (r.end_date || '') + '</td><td><span class="badge ' + statusBadgeCls(r.status) + '">' + r.status + '</span></td>' +
+          '<td class="num ' + cls(r.total_return) + '">' + pct(r.total_return) + '</td><td class="num loss">' + pct(r.max_drawdown) + '</td><td class="num">' + fix(r.sharpe) + '</td></tr>';
+      }).join('') || '<tr><td colspan="6" class="muted">无回测</td></tr>';
+      var runsCard = '<div class="card"><div style="font-weight:500;margin-bottom:8px">历次回测</div><table><thead><tr><th>日期</th><th>区间</th><th>状态</th><th class="num">收益</th><th class="num">回撤</th><th class="num">Sharpe</th></tr></thead><tbody>' + runs + '</tbody></table><div class="note" style="margin-top:8px">点任一回测 → 进入该次的成交/拒单/持仓明细</div></div>';
+      app.innerHTML = header + cards + chart + runsCard;
+      if (s.equity) drawEquity(s.equity);
+      Array.prototype.forEach.call(app.querySelectorAll('.runrow'), function (tr) {
+        if (!tr.dataset.job) return;
+        tr.addEventListener('click', function () { location.hash = '#/job/' + tr.dataset.job + '/overview'; });
+      });
+      var fav = document.getElementById('favbtn'), pin = document.getElementById('pinbtn');
+      if (fav) fav.addEventListener('click', function () { api.setMeta(id, { favorite: !s.favorite }).then(function () { renderStrategyDetail(id); }).catch(function () {}); });
+      if (pin) pin.addEventListener('click', function () { api.setMeta(id, { pinned: !s.pinned }).then(function () { renderStrategyDetail(id); }).catch(function () {}); });
+    });
+  }
+
+  function renderLeaderboard() {
+    destroyCharts(); setNav('leaderboard');
+    api.leaderboard(state.lbMetric, state.lbScope).then(function (lb) {
+      var mopts = Object.keys(METRIC_LABEL).map(function (m) { return '<option value="' + m + '"' + (m === state.lbMetric ? ' selected' : '') + '>' + METRIC_LABEL[m] + '</option>'; }).join('');
+      var sopts = [['best', '最优'], ['latest', '最新']].map(function (s) { return '<option value="' + s[0] + '"' + (s[0] === state.lbScope ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('');
+      var rows = lb.map(function (r, i) {
+        return '<tr class="row lbrow2" data-id="' + esc(r.strategy_id) + '" style="cursor:pointer"><td><span class="rk' + (i === 0 ? ' rk1' : '') + '">' + (i + 1) + '</span></td>' +
+          '<td class="mono">' + esc(r.strategy_id) + (r.favorite ? ' ★' : '') + '</td><td>' + esc(r.board || '') + '</td>' +
+          '<td class="num ' + (isPctMetric(r.metric) ? cls(r.value) : '') + '">' + fmtMetric(r.metric, r.value) + '</td><td class="num">' + r.n_runs + '</td></tr>';
+      }).join('') || '<tr><td colspan="5" class="muted">暂无可排名策略</td></tr>';
+      app.innerHTML = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-weight:500">排行榜</span>' +
+        '<span style="display:flex;gap:6px"><select id="lbmetric">' + mopts + '</select><select id="lbscope">' + sopts + '</select></span></div>' +
+        '<table><thead><tr><th style="width:36px">#</th><th>策略</th><th>板块</th><th class="num">' + METRIC_LABEL[state.lbMetric] + '(' + (state.lbScope === 'best' ? '最优' : '最新') + ')</th><th class="num">次数</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      Array.prototype.forEach.call(app.querySelectorAll('.lbrow2'), function (tr) { tr.addEventListener('click', function () { location.hash = '#/strategy/' + encodeURIComponent(tr.dataset.id); }); });
+      var lm = document.getElementById('lbmetric'), ls = document.getElementById('lbscope');
+      if (lm) lm.addEventListener('change', function () { state.lbMetric = lm.value; renderLeaderboard(); });
+      if (ls) ls.addEventListener('change', function () { state.lbScope = ls.value; renderLeaderboard(); });
+    });
+  }
+
+  function renderCompareStrategies(ids) {
+    destroyCharts(); setNav('');
+    api.compareStrategies(ids, state.benchmark).then(function (d) {
+      var ss = d.strategies || [];
+      var head = '<div style="margin-bottom:12px"><a href="#/" class="note">← 我的策略</a><div style="font-size:18px;font-weight:500">策略对比</div></div>';
+      if (ss.length < 1) { app.innerHTML = head + '<div class="card muted">没有可对比的策略</div>'; return; }
+      var rowsM = [['total_return', '最优收益'], ['max_drawdown', '最优回撤'], ['sharpe', '最优Sharpe'], ['calmar', '最优Calmar']];
+      var thead = '<tr><th>指标</th>' + ss.map(function (s) { return '<th class="num mono">' + esc(s.strategy_id) + '</th>'; }).join('') + '</tr>';
+      var body = rowsM.map(function (mm) {
+        return '<tr><td>' + mm[1] + '</td>' + ss.map(function (s) { var v = (s.best || {})[mm[0]]; return '<td class="num ' + (isPctMetric(mm[0]) ? cls(v) : '') + '">' + (isPctMetric(mm[0]) ? pct(v) : fix(v)) + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      var table = '<div class="card"><div style="font-weight:500;margin-bottom:8px">指标对比</div><table><thead>' + thead + '</thead><tbody>' + body + '</tbody></table></div>';
+      var chart = '<div class="card"><div style="font-weight:500;margin-bottom:8px">净值对比 · 归一到 100</div><div style="height:280px"><canvas id="cmp"></canvas></div></div>';
+      app.innerHTML = head + table + chart;
+      drawCompareSeries(ss);
+    });
+  }
+
+  function drawCompareSeries(entries) {
+    var withEq = entries.filter(function (e) { return e.equity && (e.equity.equity || []).length; });
+    if (!withEq.length || !document.getElementById('cmp')) return;
+    var palette = [cssVar('--accent'), cssVar('--warn'), cssVar('--profit'), cssVar('--loss'), cssVar('--muted')];
+    if (!window.Chart) {
+      fallbackSvg('cmp', withEq.map(function (e, i) { return { data: e.equity.equity, color: palette[i % palette.length] }; }));
+      return;
+    }
+    var labels = withEq[0].equity.dates;
+    var ds = withEq.map(function (e, i) { return { label: e.strategy_id, data: e.equity.equity, borderColor: palette[i % palette.length], borderWidth: 2, pointRadius: 0, tension: 0.15 }; });
+    charts.push(new Chart(document.getElementById('cmp'), {
+      type: 'line', data: { labels: labels, datasets: ds },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { labels: { color: cssVar('--text'), boxWidth: 14 } } }, scales: { x: { ticks: { color: cssVar('--muted'), maxTicksLimit: 8 }, grid: { display: false } }, y: { ticks: { color: cssVar('--muted') }, grid: { color: cssVar('--border') } } } }
+    }));
+  }
+
+  function parseQuery(q) { var o = {}; (q || '').split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) o[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1)); }); return o; }
+
   function route() {
-    var h = location.hash.replace(/^#\/?/, ''); var p = h.split('/');
-    if (p[0] === 'job' && p[1]) renderOverview(p[1], p[2] || 'overview');
-    else renderList();
+    var raw = location.hash.replace(/^#\/?/, '');
+    var qi = raw.indexOf('?'); var path = qi >= 0 ? raw.slice(0, qi) : raw; var query = qi >= 0 ? raw.slice(qi + 1) : '';
+    var p = path.split('/');
+    if (p[0] === 'job' && p[1]) return renderOverview(p[1], p[2] || 'overview');
+    if (p[0] === 'strategy' && p[1]) return renderStrategyDetail(decodeURIComponent(p[1]));
+    if (p[0] === 'leaderboard') return renderLeaderboard();
+    if (p[0] === 'compare') return renderCompareStrategies(parseQuery(query).ids || '');
+    if (p[0] === 'runs') return renderList();
+    return renderHome();
   }
   window.addEventListener('hashchange', route);
   matchMedia('(prefers-color-scheme:dark)').addEventListener('change', function () { if ((localStorage.getItem('vbt-theme') || 'system') === 'system') { applyTheme('system'); route(); } });

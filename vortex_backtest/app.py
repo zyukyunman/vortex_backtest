@@ -7,7 +7,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,6 +26,7 @@ from .models import (
     TradeOut,
 )
 from . import benchmark as benchmark_mod
+from . import strategies as strat_mod
 from .metrics import compute_metrics
 from .store import DataStore, normalize_account, normalize_job, normalize_order
 from .symbols import crosswalk
@@ -392,6 +393,109 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
                 detail={"error": "cannot_cancel_running", "hint": "运行中作业暂不支持中断，待其完成"},
             )
         raise HTTPException(status_code=409, detail={"error": "not_cancellable", "status": status})
+
+    # ---- 策略中心(按 strategy_id 从回测派生的只读聚合) ----
+    def _aggregates(account: str | None, best_metric: str) -> list[dict]:
+        rows = store.list_jobs(account_id=account)
+        views = [strat_mod.job_view(row) for row in rows]
+        meta = store.get_strategy_meta(account) if account else {}
+        return strat_mod.aggregate(views, meta=meta, best_metric=best_metric)
+
+    def _strategy_daily(job_id: str, strategy_id: str) -> list[dict]:
+        try:
+            job = normalize_job(_get_job_or_404(store, job_id))
+        except HTTPException:
+            return []
+        summary = job.get("summary") or {}
+        for strat in summary.get("strategies", []) or []:
+            if strat.get("strategy_id") == strategy_id:
+                return strat.get("daily", []) or []
+        return summary.get("daily", []) or []
+
+    def _equity_from_daily(daily: list[dict], benchmark: str | None) -> dict:
+        dates = [d["trade_date"] for d in daily]
+        eq = [float(d["total_value"]) for d in daily]
+        result: dict = {"dates": dates, "drawdown": [float(d.get("drawdown", 0.0)) for d in daily], "rebase": True}
+        result["equity"] = [round(v / eq[0] * 100.0, 6) for v in eq] if (eq and eq[0]) else eq
+        result["baseline"] = 100.0
+        if benchmark:
+            series = benchmark_mod.benchmark_series(benchmark, dates)
+            result["benchmark"] = {"symbol": benchmark, "values": series, "available": series is not None}
+        return result
+
+    @app.get("/strategies")
+    def list_strategies(
+        data_store: DataStore = Depends(get_store),
+        account_id: str | None = Query(default=None),
+        best_metric: str = Query(default="total_return"),
+    ) -> list[dict]:
+        aggs = _aggregates(account_id, best_metric)
+        for agg in aggs:
+            agg.pop("runs", None)  # 列表页不带全部 run,详情页才带
+        return aggs
+
+    @app.get("/strategies/compare")
+    def compare_strategies(
+        ids: str = Query(...),
+        data_store: DataStore = Depends(get_store),
+        account_id: str | None = Query(default=None),
+        benchmark: str | None = Query(default=None),
+    ) -> dict:
+        wanted = [x.strip() for x in ids.split(",") if x.strip()]
+        by_id = {a["strategy_id"]: a for a in _aggregates(account_id, "total_return")}
+        out = []
+        for sid in wanted:
+            agg = by_id.get(sid)
+            if not agg:
+                continue
+            latest_done = next((r for r in agg["runs"] if r["status"] == "completed"), None)
+            entry = {"strategy_id": sid, "latest": agg["latest"], "best": agg["best"]}
+            if latest_done:
+                entry["equity"] = _equity_from_daily(_strategy_daily(latest_done["job_id"], sid), benchmark)
+            out.append(entry)
+        return {"strategies": out, "benchmark": benchmark}
+
+    @app.get("/leaderboard")
+    def get_leaderboard(
+        data_store: DataStore = Depends(get_store),
+        account_id: str | None = Query(default=None),
+        metric: str = Query(default="total_return"),
+        scope: str = Query(default="best"),
+        top: int = Query(default=20, ge=1, le=100),
+    ) -> list[dict]:
+        aggs = _aggregates(account_id, metric if metric in strat_mod.METRICS else "total_return")
+        return strat_mod.leaderboard(aggs, metric=metric, scope=scope, top=top)
+
+    @app.get("/strategies/{strategy_id}")
+    def get_strategy(
+        strategy_id: str,
+        data_store: DataStore = Depends(get_store),
+        account_id: str | None = Query(default=None),
+        best_metric: str = Query(default="total_return"),
+        benchmark: str | None = Query(default=None),
+    ) -> dict:
+        for agg in _aggregates(account_id, best_metric):
+            if agg["strategy_id"] == strategy_id:
+                latest_done = next((r for r in agg["runs"] if r["status"] == "completed"), None)
+                if latest_done:
+                    agg["equity"] = _equity_from_daily(_strategy_daily(latest_done["job_id"], strategy_id), benchmark)
+                return agg
+        raise HTTPException(status_code=404, detail="strategy not found")
+
+    @app.put("/strategies/{strategy_id}/meta")
+    def put_strategy_meta(
+        strategy_id: str,
+        account_id: str = Query(...),
+        payload: dict | None = Body(default=None),
+        data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
+    ) -> dict:
+        _get_account_or_404(data_store, account_id)
+        data = payload or {}
+        return data_store.set_strategy_meta(
+            account_id, strategy_id,
+            favorite=data.get("favorite"), pinned=data.get("pinned"), tags=data.get("tags"),
+        )
 
     @app.get("/accounts/{account_id}/summary", response_model=AccountSummaryOut)
     def get_latest_account_summary(
