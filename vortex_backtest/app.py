@@ -7,7 +7,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -236,6 +236,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
 
     @app.get("/backtests/{job_id}/trades", response_model=list[TradeOut])
     def get_backtest_trades(
+        response: Response,
         job_id: str,
         data_store: DataStore = Depends(get_store),
         trade_date: date | None = Query(default=None),
@@ -253,6 +254,8 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
             trades = [trade for trade in trades if trade.get("symbol") == symbol]
         if strategy_id is not None:
             trades = [trade for trade in trades if trade.get("strategy_id") == strategy_id]
+        # 过滤后、分页前的总数，供前端服务端分页计算页数
+        response.headers["X-Total-Count"] = str(len(trades))
         if offset:
             trades = trades[offset:]
         if limit is not None:
@@ -261,6 +264,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
 
     @app.get("/backtests/{job_id}/rejections", response_model=list[RejectionOut])
     def get_backtest_rejections(
+        response: Response,
         job_id: str,
         data_store: DataStore = Depends(get_store),
         trade_date: date | None = Query(default=None),
@@ -278,6 +282,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
             rejections = [r for r in rejections if r.get("reason") == reason]
         if strategy_id is not None:
             rejections = [r for r in rejections if r.get("strategy_id") == strategy_id]
+        response.headers["X-Total-Count"] = str(len(rejections))
         if offset:
             rejections = rejections[offset:]
         if limit is not None:

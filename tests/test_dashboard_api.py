@@ -48,6 +48,27 @@ def test_ui_shell_is_served(tmp_path: Path) -> None:
     assert client.get("/ui/static/app.css").status_code == 200
 
 
+def test_trades_server_side_pagination(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    write_workspace(workspace, symbols=("000001.SZ",))
+    monkeypatch.setenv("VORTEX_DATA_WORKSPACE", str(workspace))
+    app = create_app(tmp_path / "state", run_worker=False)
+    c = TestClient(app)
+    c.post("/accounts", json={"account_id": "a", "initial_cash": 100000})
+    c.post("/accounts/a/orders", json={"request_id": "o1", "trade_date": "2026-01-02", "symbol": "000001.SZ", "side": 1, "quantity": 1000})
+    c.post("/accounts/a/orders", json={"request_id": "o2", "trade_date": "2026-01-05", "symbol": "000001.SZ", "side": 2, "quantity": 1000})  # T+1 次日可卖
+    jid = c.post("/backtests", json={"account_id": "a", "frequency": "1min", "price_adjustment": "qfq", "start_date": "2026-01-02", "end_date": "2026-01-05"}).json()["job_id"]
+    drain_jobs(app.state.store)
+    assert c.get(f"/backtests/{jid}").json()["status"] == "completed"
+    assert len(c.get(f"/backtests/{jid}/trades").json()) == 2  # 买 + 卖
+
+    p0 = c.get(f"/backtests/{jid}/trades", params={"limit": 1, "offset": 0})
+    p1 = c.get(f"/backtests/{jid}/trades", params={"limit": 1, "offset": 1})
+    assert p0.headers["X-Total-Count"] == "2" and p1.headers["X-Total-Count"] == "2"
+    assert len(p0.json()) == 1 and len(p1.json()) == 1
+    assert p0.json()[0]["trade_date"] != p1.json()[0]["trade_date"]  # 两页内容不同
+
+
 def test_cancel_queued_job(tmp_path: Path) -> None:
     app = create_app(tmp_path, run_worker=False)
     c = TestClient(app)

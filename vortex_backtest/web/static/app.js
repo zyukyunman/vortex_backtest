@@ -89,6 +89,13 @@
 
   function j(url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
   function jp(url) { return fetch(url, { method: 'POST' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
+  function jh(url) {  // GET + 读 X-Total-Count → {items,total}（服务端分页）
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      var total = parseInt(r.headers.get('X-Total-Count') || '', 10);
+      return r.json().then(function (b) { return { items: b, total: isNaN(total) ? b.length : total }; });
+    });
+  }
   // 数据来源：'live' 强制真实 API；'mock' 强制假数据；null=自动(优先真实，失败回退 mock，
   // 便于壳脱离后端独立运行)。LIVE 仅作向后兼容别名。
   var FORCE = LIVE === true ? 'live' : (LIVE === 'mock' ? 'mock' : null);
@@ -104,6 +111,17 @@
     rejsum: function (id) { return pick('/backtests/' + id + '/rejections/summary', MOCK.rejsum); },
     summary: function (id) { return pick('/backtests/' + id + '/summary', MOCK.summary); },
     cancel: function (id) { return FORCE === 'mock' ? Promise.resolve(null) : jp('/backtests/' + id + '/cancel'); }
+  };
+  api.tradesPage = function (id, q) {
+    if (FORCE === 'mock') { var all = MOCK.summary.trades; return Promise.resolve({ items: all.slice(q.offset, q.offset + q.limit), total: all.length }); }
+    return jh('/backtests/' + id + '/trades?limit=' + q.limit + '&offset=' + q.offset);
+  };
+  api.rejectionsPage = function (id, q) {
+    if (FORCE === 'mock') {
+      var all = q.reason ? MOCK.summary.rejections.filter(function (r) { return r.reason === q.reason; }) : MOCK.summary.rejections;
+      return Promise.resolve({ items: all.slice(q.offset, q.offset + q.limit), total: all.length });
+    }
+    return jh('/backtests/' + id + '/rejections?limit=' + q.limit + '&offset=' + q.offset + (q.reason ? '&reason=' + encodeURIComponent(q.reason) : ''));
   };
 
   function badge(st, prog) {
@@ -267,33 +285,31 @@
     }).join('') + '</div>';
   }
 
-  function tradesView(s) {
-    var all = s.trades || [];
-    var rows = slice(all, 'trades').map(function (t) {
+  function tradesTable(items) {
+    var rows = (items || []).map(function (t) {
       return '<tr><td class="mono">' + t.trade_date + '</td><td class="mono">' + esc(t.symbol) +
         '</td><td class="' + (t.side_name === 'SELL' ? 'loss' : 'profit') + '">' + (t.side_name === 'SELL' ? '卖' : '买') +
         '</td><td class="num">' + t.quantity + '</td><td class="num">' + fix(t.price) + '</td><td class="num">' + money(t.amount) +
         '</td><td class="num">' + fix(t.commission) + '</td><td class="num">' + money(t.cash_after) + '</td></tr>';
     }).join('') || '<tr><td colspan="8" class="muted">无成交</td></tr>';
-    return '<div class="card"><table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th>' +
-      '<th class="num">价格</th><th class="num">金额</th><th class="num">佣金</th><th class="num">现金余额</th></tr></thead><tbody>' + rows + '</tbody></table>' + pager('trades', all.length) + '</div>';
+    return '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th>' +
+      '<th class="num">价格</th><th class="num">金额</th><th class="num">佣金</th><th class="num">现金余额</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
-  function rejectionsView(s) {
-    var all0 = s.rejections || [];
-    var reasons = {};
-    all0.forEach(function (r) { reasons[r.reason] = (reasons[r.reason] || 0) + 1; });
-    var rf = state.reasonFilter || '';
-    var all = rf ? all0.filter(function (r) { return r.reason === rf; }) : all0;
-    var opts = '<option value="">全部原因 (' + all0.length + ')</option>' + Object.keys(reasons).map(function (k) {
-      return '<option value="' + esc(k) + '"' + (k === rf ? ' selected' : '') + '>' + esc(k) + ' (' + reasons[k] + ')</option>';
+  function rejectionsControls(counts, selected) {
+    var total = Object.keys(counts).reduce(function (a, k) { return a + counts[k]; }, 0);
+    var opts = '<option value="">全部原因 (' + total + ')</option>' + Object.keys(counts).map(function (k) {
+      return '<option value="' + esc(k) + '"' + (k === selected ? ' selected' : '') + '>' + esc(k) + ' (' + counts[k] + ')</option>';
     }).join('');
-    var rows = slice(all, 'rejections').map(function (r) {
+    return '<div style="margin-bottom:10px"><select id="reasonf" aria-label="按原因筛选">' + opts + '</select></div>';
+  }
+
+  function rejectionsTable(items) {
+    var rows = (items || []).map(function (r) {
       return '<tr><td class="mono">' + r.trade_date + '</td><td class="mono">' + esc(r.symbol) +
         '</td><td>' + (r.side_name === 'SELL' ? '卖' : '买') + '</td><td class="num">' + r.quantity + '</td><td class="warn">' + esc(r.reason) + '</td></tr>';
     }).join('') || '<tr><td colspan="5" class="muted">0 拒单 ✓ 全部通过</td></tr>';
-    return '<div class="card"><div style="margin-bottom:10px"><select id="reasonf" aria-label="按原因筛选">' + opts + '</select></div>' +
-      '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th><th>原因</th></tr></thead><tbody>' + rows + '</tbody></table>' + pager('rejections', all.length) + '</div>';
+    return '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th><th>原因</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
   function wireTabControls(id) {
@@ -356,6 +372,23 @@
     }));
   }
 
+  function renderTradesTab(id) {  // 服务端分页：每页向后端取 limit/offset
+    var p = state.page.trades || 0;
+    api.tradesPage(id, { limit: PAGE, offset: p * PAGE }).then(function (res) {
+      app.innerHTML = tabsHtml(id, 'trades') + '<div class="card">' + tradesTable(res.items) + pager('trades', res.total) + '</div>';
+      wireTabControls(id);
+    });
+  }
+
+  function renderRejectionsTab(id) {
+    var p = state.page.rejections || 0, rf = state.reasonFilter || '';
+    Promise.all([api.rejsum(id), api.rejectionsPage(id, { limit: PAGE, offset: p * PAGE, reason: rf })]).then(function (r) {
+      var counts = (r[0] && r[0].counts) || {}, page = r[1];
+      app.innerHTML = tabsHtml(id, 'rejections') + '<div class="card">' + rejectionsControls(counts, rf) + rejectionsTable(page.items) + pager('rejections', page.total) + '</div>';
+      wireTabControls(id);
+    });
+  }
+
   function renderOverview(id, tab) {
     destroyCharts();
     state.jobId = id;
@@ -370,13 +403,11 @@
       });
       return;
     }
+    if (tab === 'trades') { renderTradesTab(id); return; }
+    if (tab === 'rejections') { renderRejectionsTab(id); return; }
     api.summary(id).then(function (s) {
-      var body = tab === 'trades' ? tradesView(s)
-        : tab === 'rejections' ? rejectionsView(s)
-          : tab === 'positions' ? positionsView(s)
-            : compareView(s);
+      var body = tab === 'positions' ? positionsView(s) : compareView(s);
       app.innerHTML = tabsHtml(id, tab) + body;
-      wireTabControls(id);
       if (tab === 'compare') drawCompare(s);
     });
   }
