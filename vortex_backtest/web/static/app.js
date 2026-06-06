@@ -216,7 +216,7 @@
         var s = jb.summary || {};
         var ret = jb.status === 'completed' ? '<span class="' + cls(s.total_return) + '">' + arrow(s.total_return) + pct(s.total_return) + '</span>' : '';
         var dd = jb.status === 'completed' ? pct(s.max_drawdown) : '';
-        var last = jb.status === 'failed' ? '<span class="loss">' + esc(s.error || 'failed') + '</span>' : (s.trades != null ? s.trades + ' 笔' : '');
+        var last = jb.status === 'failed' ? '<span class="loss" title="' + esc(s.error || '') + '">' + esc(reasonLabel(s.error || 'failed')) + '</span>' : (s.trades != null ? s.trades + ' 笔' : '');
         var names = jb.strategy_ids || [];
         var nameHtml = names.length ? names.map(esc).join('<span class="muted">, </span>') : '<span class="muted">—</span>';
         return '<tr class="row" data-id="' + jb.job_id + '"><td>' + nameHtml + '<div class="note mono" style="font-size:11px;opacity:.55">' + jb.job_id + '</div></td><td>' + jb.account_id +
@@ -355,10 +355,36 @@
       '<th class="num">价格</th><th class="num">金额</th><th class="num">佣金</th><th class="num">现金余额</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
+  // 拒单原因 / 作业失败原因 → 中文（仅展示层；API 仍用英文码，筛选 value 保持原码）
+  var REASON_LABEL = {
+    t_plus_1_not_sellable: 'T+1 当日买入不可卖',
+    limit_up_buy_blocked: '涨停无法买入',
+    limit_down_sell_blocked: '跌停无法卖出',
+    insufficient_cash: '现金不足',
+    insufficient_position: '持仓不足',
+    invalid_lot_size: '手数不合规',
+    invalid_price_tick: '价格最小变动不合规',
+    volume_cap_below_lot: '成交量上限不足一手',
+    no_market_data: '无行情数据',
+    suspended: '停牌',
+    minute_data_missing: '缺少分钟数据',
+    adjustment_data_missing: '缺少复权数据',
+    market_rules_data_missing: '缺少涨跌停/停牌数据',
+    no_symbols: '无可回放标的',
+    start_end_required: '需指定起止日期',
+    unsupported_frequency: '频率不支持(仅 1min)',
+    unsupported_price_adjustment: '复权口径不支持',
+    unsupported_order_price_adjustment: '下单复权口径不支持',
+    unsupported_strategy_type: '策略类型不支持',
+    internal_error: '内部错误',
+    failed: '失败'
+  };
+  function reasonLabel(code) { return REASON_LABEL[code] || code || ''; }
+
   function rejectionsControls(counts, selected) {
     var total = Object.keys(counts).reduce(function (a, k) { return a + counts[k]; }, 0);
     var opts = '<option value="">全部原因 (' + total + ')</option>' + Object.keys(counts).map(function (k) {
-      return '<option value="' + esc(k) + '"' + (k === selected ? ' selected' : '') + '>' + esc(k) + ' (' + counts[k] + ')</option>';
+      return '<option value="' + esc(k) + '"' + (k === selected ? ' selected' : '') + '>' + esc(reasonLabel(k)) + ' (' + counts[k] + ')</option>';
     }).join('');
     return '<div style="margin-bottom:10px"><select id="reasonf" aria-label="按原因筛选">' + opts + '</select></div>';
   }
@@ -366,7 +392,7 @@
   function rejectionsTable(items) {
     var rows = (items || []).map(function (r) {
       return '<tr><td class="mono">' + r.trade_date + '</td><td class="mono">' + esc(r.symbol) +
-        '</td><td>' + (r.side_name === 'SELL' ? '卖' : '买') + '</td><td class="num">' + r.quantity + '</td><td class="warn">' + esc(r.reason) + '</td></tr>';
+        '</td><td>' + (r.side_name === 'SELL' ? '卖' : '买') + '</td><td class="num">' + r.quantity + '</td><td class="warn" title="' + esc(r.reason) + '">' + esc(reasonLabel(r.reason)) + '</td></tr>';
     }).join('') || '<tr><td colspan="5" class="muted">0 拒单 ✓ 全部通过</td></tr>';
     return '<table><thead><tr><th>日期</th><th>标的</th><th>方向</th><th class="num">数量</th><th>原因</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
