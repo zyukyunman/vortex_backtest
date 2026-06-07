@@ -3,10 +3,10 @@
 两类子命令：
 - `serve`：在本机起 HTTP 服务（等价于以前的 `vortex-backtest`）。
 - 其余子命令是**协议客户端**：通过 HTTP 与运行中的服务交互（用 stdlib urllib，无额外依赖）。
-  默认 base-url = $VORTEX_BACKTEST_BASE_URL 或 http://127.0.0.1:8765。
+  默认 base-url = $VORTEX_BACKTEST_BASE_URL 或 http://127.0.0.1:8767。
 
 示例：
-  vortex-backtest serve --host 127.0.0.1 --port 8765
+  vortex-backtest serve --host 127.0.0.1 --port 8767
   vortex-backtest account create --id demo --cash 100000
   vortex-backtest account list
   vortex-backtest order add --account demo --request-id buy-1 --date 2026-01-02 \
@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-DEFAULT_BASE_URL = os.getenv("VORTEX_BACKTEST_BASE_URL", "http://127.0.0.1:8765")
+DEFAULT_BASE_URL = os.getenv("VORTEX_BACKTEST_BASE_URL", "http://127.0.0.1:8767")
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 
 
@@ -216,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = sub.add_parser("serve", help="在本机起 HTTP 服务")
     p_serve.add_argument("--host", default=os.getenv("VORTEX_BACKTEST_HOST", "127.0.0.1"))
-    p_serve.add_argument("--port", type=int, default=int(os.getenv("VORTEX_BACKTEST_PORT", "8765")))
+    p_serve.add_argument("--port", type=int, default=int(os.getenv("VORTEX_BACKTEST_PORT", "8767")))
     p_serve.add_argument("--reload", action="store_true")
     p_serve.set_defaults(func=cmd_serve)
 

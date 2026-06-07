@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .models import (
@@ -74,7 +74,10 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     app = FastAPI(
         title="Vortex Backtest Service",
         version="0.1.0",
-        description="HTTP service for account-scoped A-share order replay backtests.",
+        description=(
+            "A 股账户级订单回放回测服务。浏览器文档："
+            "设计与使用指南见 /guide，交互式 API 见 /docs(Swagger) 与 /redoc，看板见 /ui/。"
+        ),
     )
     app.state.store = store
     # 崩溃恢复：把上次残留的 running 作业重排回 queued（ADR-3）
@@ -552,6 +555,18 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         def dashboard_root() -> RedirectResponse:
             return RedirectResponse(url="/ui/")
 
+    # 文档站：/guide 渲染 design/ + docs/ 的 Markdown（设计与使用指南）；
+    # API 协议见 FastAPI 自带的 /docs(Swagger) 与 /redoc。
+    from . import docs_site
+
+    @app.get("/guide", include_in_schema=False)
+    def guide_home() -> HTMLResponse:
+        return HTMLResponse(docs_site.render_site(None))
+
+    @app.get("/guide/{doc_path:path}", include_in_schema=False)
+    def guide_doc(doc_path: str) -> HTMLResponse:
+        return HTMLResponse(docs_site.render_site(doc_path))
+
     return app
 
 
@@ -585,7 +600,7 @@ def main() -> None:
     uvicorn.run(
         "vortex_backtest.app:app",
         host=os.getenv("VORTEX_BACKTEST_HOST", "127.0.0.1"),
-        port=int(os.getenv("VORTEX_BACKTEST_PORT", "8765")),
+        port=int(os.getenv("VORTEX_BACKTEST_PORT", "8767")),
         reload=os.getenv("VORTEX_BACKTEST_RELOAD", "0") == "1",
     )
 
