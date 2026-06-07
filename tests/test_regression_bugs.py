@@ -38,7 +38,6 @@ def _drain_summary(client: TestClient, payload: dict[str, Any]) -> dict[str, Any
 #         replay_engine.execute_order。
 # ============================================================================
 
-@pytest.mark.xfail(strict=True, reason="bug#1 滑点未计入买入现金校验，临界单导致现金为负")
 def test_slippage_must_not_drive_cash_negative(tmp_path, monkeypatch, workspace_builder):
     ws = workspace_builder.day(
         "2026-01-02", "000001.SZ", open=10.0, close=10.0, volume=1_000_000, up_limit=99.0, down_limit=1.0

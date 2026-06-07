@@ -188,6 +188,15 @@ class MinuteReplayEngine:
                     for order in orders_by_key.get((symbol, row_date_key, price_type), []):
                         fill_price = float(row[f"{price_type}_qfq"])
                         raw_fill_price = float(row[price_type])
+                        # 滑点：买入抬价、卖出压价（撮合/估值仍用 qfq 价）。bug#1 修复——
+                        # 现金充足性必须按**含滑点的成交价 exec_price** 校验，与下方 execute_order
+                        # 实际扣款口径一致；否则临界买单滑点未计入 → 成交后现金被打成负数。
+                        slip = slippage_bps / 1e4
+                        exec_price = (
+                            fill_price * (1 + slip)
+                            if int(order["side"]) == int(Side.BUY)
+                            else fill_price * (1 - slip)
+                        )
                         position = positions.setdefault(symbol, Position())
                         reason = rules.validate_order(
                             order=order,
@@ -195,7 +204,7 @@ class MinuteReplayEngine:
                             cash=cash,
                             position_quantity=position.quantity,
                             sellable_quantity=position.sellable_quantity,
-                            fill_price=fill_price,
+                            fill_price=exec_price,
                             raw_fill_price=raw_fill_price,
                         )
                         if reason is not None:
@@ -224,13 +233,6 @@ class MinuteReplayEngine:
                                 )
                             )
                             continue
-                        # 滑点（P6）：买入抬价、卖出压价；默认 0 不变。撮合/估值仍用 qfq 价。
-                        slip = slippage_bps / 1e4
-                        exec_price = (
-                            fill_price * (1 + slip)
-                            if int(order["side"]) == int(Side.BUY)
-                            else fill_price * (1 - slip)
-                        )
                         trade_counter += 1
                         trade, cash = execute_order(
                             strategy_id=strategy_id,
