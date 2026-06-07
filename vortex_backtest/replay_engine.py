@@ -261,7 +261,7 @@ class MinuteReplayEngine:
                 )
             )
 
-        daily = daily_from_minutes(minute_snapshots, initial_cash)
+        daily = daily_from_minutes(minute_snapshots, initial_cash, calendar)
         final_positions = position_rows(
             strategy_id=strategy_id,
             positions=positions,
@@ -506,42 +506,68 @@ def position_rows(
     return rows
 
 
-def daily_from_minutes(minutes: list[dict[str, Any]], initial_cash: float) -> list[dict[str, Any]]:
+def daily_from_minutes(
+    minutes: list[dict[str, Any]],
+    initial_cash: float,
+    calendar: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """逐策略日级净值：把分钟快照归约为每个交易日的 EOD 行。
+
+    bug#2 修复：日级轴用**完整交易日历** `calendar`（各标的交易日并集），而非"该策略当日有
+    快照的日期"。策略当日无快照（标的停牌/无数据）时 **forward-fill** 上一已知现金/持仓/市值
+    （首个快照前为纯现金持有 `initial_cash`），避免缺席日被当成凭空蒸发、聚合后组合净值失真。
+    """
     if not minutes:
         return []
+    strategy_id = str(minutes[0]["strategy_id"])
     by_date: dict[str, dict[str, Any]] = {}
     for snapshot in minutes:
         by_date[snapshot["timestamp"][:10]] = snapshot
+    if calendar:
+        axis = [date_from_key(key).isoformat() for key in sorted(set(calendar))]
+    else:
+        axis = sorted(by_date)
+    if not axis:
+        return []
+
     daily: list[dict[str, Any]] = []
-    previous_total = initial_cash
-    high_watermark = initial_cash
-    for trade_date, snapshot in sorted(by_date.items()):
-        total_value = float(snapshot["total_value"])
-        high_watermark = max(high_watermark, total_value)
+    previous_total = float(initial_cash)
+    high_watermark = float(initial_cash)
+    # 首个快照前：纯现金持有（无持仓、市值 0）
+    carry_cash = float(initial_cash)
+    carry_market_value = 0.0
+    carry_total = float(initial_cash)
+    carry_positions: list[dict[str, Any]] = []
+    for trade_date in axis:
+        snapshot = by_date.get(trade_date)
+        if snapshot is not None:
+            carry_cash = float(snapshot["cash"])
+            carry_market_value = float(snapshot["market_value"])
+            carry_total = float(snapshot["total_value"])
+            carry_positions = snapshot["positions"]
+            day_trades = [t for t in snapshot["trades"] if t["trade_date"] == trade_date]
+            day_rejections = [r for r in snapshot["rejections"] if r["trade_date"] == trade_date]
+        else:
+            # 缺席日：持仓/现金不变，持仓按最后价估值（forward-fill）
+            day_trades = []
+            day_rejections = []
+        high_watermark = max(high_watermark, carry_total)
         daily.append(
             {
-                "strategy_id": snapshot["strategy_id"],
+                "strategy_id": strategy_id,
                 "trade_date": trade_date,
-                "cash": snapshot["cash"],
-                "market_value": snapshot["market_value"],
-                "total_value": snapshot["total_value"],
-                "daily_pnl": round_money(total_value - previous_total),
-                "total_return": round_ratio(
-                    total_value / initial_cash - 1 if initial_cash else 0.0
-                ),
-                "drawdown": round_ratio(total_value / high_watermark - 1 if high_watermark else 0.0),
-                "positions": snapshot["positions"],
-                "trades": [
-                    trade for trade in snapshot["trades"] if trade["trade_date"] == trade_date
-                ],
-                "rejections": [
-                    rejection
-                    for rejection in snapshot["rejections"]
-                    if rejection["trade_date"] == trade_date
-                ],
+                "cash": round_money(carry_cash),
+                "market_value": round_money(carry_market_value),
+                "total_value": round_money(carry_total),
+                "daily_pnl": round_money(carry_total - previous_total),
+                "total_return": round_ratio(carry_total / initial_cash - 1 if initial_cash else 0.0),
+                "drawdown": round_ratio(carry_total / high_watermark - 1 if high_watermark else 0.0),
+                "positions": carry_positions,
+                "trades": day_trades,
+                "rejections": day_rejections,
             }
         )
-        previous_total = total_value
+        previous_total = carry_total
     return daily
 
 

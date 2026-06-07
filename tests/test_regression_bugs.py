@@ -66,7 +66,6 @@ def test_slippage_must_not_drive_cash_negative(tmp_path, monkeypatch, workspace_
 #   位置：replay_engine.aggregate_daily。
 # ============================================================================
 
-@pytest.mark.xfail(strict=True, reason="bug#2 aggregate_daily 在日期缺口处漏算缺席策略，组合净值失真")
 def test_multi_strategy_daily_aggregation_handles_missing_dates(tmp_path, monkeypatch, workspace_builder):
     # A 标的两天都有 bar；B 标的仅 01-05 有 bar（01-02 视作停牌/无数据）。两策略各持 1 万现金、都不下单。
     ws = (
