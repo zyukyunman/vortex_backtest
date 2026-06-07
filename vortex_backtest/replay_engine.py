@@ -17,47 +17,7 @@ from .market_rules import AShareRuleEngine, FeeModel
 from .models import Side
 from .symbols import normalize_symbol
 
-try:
-    import backtrader as bt
-except ImportError:  # pragma: no cover - dependency is installed in normal runtime
-    bt = None
-
-
-if bt is not None:
-
-    class TushareMinutePandasData(bt.feeds.PandasData):
-        lines = (
-            "raw_open",
-            "raw_high",
-            "raw_low",
-            "raw_close",
-            "limit_up",
-            "limit_down",
-            "suspended",
-            "is_st",
-            "volume_shares",
-        )
-        params = (
-            ("datetime", None),
-            ("open", "open_qfq"),
-            ("high", "high_qfq"),
-            ("low", "low_qfq"),
-            ("close", "close_qfq"),
-            ("volume", "volume"),
-            ("openinterest", -1),
-            ("raw_open", "open"),
-            ("raw_high", "high"),
-            ("raw_low", "low"),
-            ("raw_close", "close"),
-            ("limit_up", "limit_up_qfq"),
-            ("limit_down", "limit_down_qfq"),
-            ("suspended", "suspended"),
-            ("is_st", "is_st"),
-            ("volume_shares", "volume"),
-        )
-
-else:
-    TushareMinutePandasData = object
+# 已删除未使用的 backtrader feed 死类（引擎为纯 Python 撮合，不依赖第三方回测框架；见 design/15）
 
 
 @dataclass
@@ -67,7 +27,7 @@ class Position:
     cost_basis: float = 0.0
 
 
-class BacktraderMinuteReplayEngine:
+class MinuteReplayEngine:
     def __init__(
         self,
         *,

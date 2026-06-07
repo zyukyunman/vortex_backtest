@@ -12,7 +12,7 @@ HTTP 协议层 + 异步作业 + A 股分钟撮合/规则层 + Tushare 本地 Par
 
 ## 当前能力
 
-- `POST /accounts` 创建账户，默认 `engine=backtrader`
+- `POST /accounts` 创建账户，默认 `engine=replay`
 - `POST /accounts/{account_id}/orders` 提交外部订单
 - `POST /backtests` 提交 qfq 回测（**异步**：返回 `202 + job_id`，轮询 `GET /backtests/{job_id}` 到 `completed`）
 - `GET /backtests/{job_id}` 查询作业状态/进度

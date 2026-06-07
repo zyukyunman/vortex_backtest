@@ -31,8 +31,8 @@ class PriceAdjustment(StrEnum):
 
 
 class EngineName(StrEnum):
-    # 自研 A 股分钟撮合引擎（历史名 backtrader；qlib 引擎已于 2026-06-07 移除，见 design/14）
-    BACKTRADER = "backtrader"
+    # 自研 A 股分钟撮合引擎（前身误名 backtrader，已于 2026-06-07 正名；见 design/15）
+    REPLAY = "replay"
 
 
 class Frequency(StrEnum):
@@ -55,8 +55,16 @@ class StrategyCreate(BaseModel):
 class AccountCreate(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=64)
     initial_cash: float = Field(..., gt=0)
-    engine: EngineName = EngineName.BACKTRADER
+    engine: EngineName = EngineName.REPLAY
     name: str | None = Field(default=None, max_length=128)
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _coerce_legacy_engine(cls, value: Any) -> Any:
+        # 兼容历史/旧客户端的引擎值（backtrader/qlib/rqalpha/ashare_replay）→ 统一 replay
+        if isinstance(value, str) and value in {"backtrader", "qlib", "rqalpha", "ashare_replay"}:
+            return "replay"
+        return value
 
 
 class AccountOut(BaseModel):

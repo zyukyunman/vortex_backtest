@@ -11,7 +11,7 @@ import time
 import traceback
 from typing import Any
 
-from .backtrader_adapter import BacktraderMinuteReplayEngine
+from .replay_engine import MinuteReplayEngine
 from .models import BacktestCreate, EngineName
 from .store import DataStore
 
@@ -31,9 +31,12 @@ SAFE_ERROR_CODES = {
 
 
 def engine_for(engine_name: str):
+    # 兼容历史引擎值（backtrader/qlib/rqalpha/ashare_replay）→ replay
+    if engine_name in {"backtrader", "qlib", "rqalpha", "ashare_replay"}:
+        engine_name = "replay"
     engine = EngineName(engine_name)
-    if engine == EngineName.BACKTRADER:
-        return BacktraderMinuteReplayEngine()
+    if engine == EngineName.REPLAY:
+        return MinuteReplayEngine()
     raise ValueError(f"unsupported engine: {engine_name}")
 
 
