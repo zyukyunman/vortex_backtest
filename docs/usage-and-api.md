@@ -234,3 +234,21 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权（非回环必配） | 任意密钥 |
 | `VORTEX_BACKTEST_BASE_URL` | CLI 客户端默认连的服务地址 | `http://127.0.0.1:8765` |
 | `VORTEX_BACKTEST_STATE_DIR` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
+
+---
+
+## 附：与券商对账单对照（容差）
+
+回测走 **qfq 前复权、不建模现金分红**，与券商真实账本按**容差**对照即可（口径见 design/15）。
+
+1. 跑回测拿到产物 `account_summary.json`（作业完成后在 `report_dir`，或 `GET /backtests/{job_id}/summary`）。
+2. 备好券商对账单 CSV（必需列 `date,symbol,side,quantity,price`；可含 `amount/commission/stamp_tax/transfer_fee/request_id`，列名中英文别名自动识别）。
+3. 对照：
+
+   ```bash
+   python scripts/reconcile_statement.py \
+       --summary account_summary.json --statement 对账单.csv \
+       --events-dir "$VORTEX_DATA_WORKSPACE/data/events" --tolerance 0.005
+   ```
+
+   按 `(date, symbol, side)` 聚合比较 数量 / 成交额 / 费用，超差或未匹配列入"需排查"（退出码 1，便于 CI 卡口）。窗口内**除权**的标的（读 `events.ex_date`）标注为**预期 qfq 分红差**，与真 bug 区分。成交记录另含 `realized_pnl`（已实现盈亏）与 `requested_quantity`（原始下单量，便于识别量能上限导致的部分成交）。
