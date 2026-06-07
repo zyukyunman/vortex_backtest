@@ -173,12 +173,14 @@ class TradeOut(BaseModel):
     symbol: str
     side: Side
     side_name: str
+    requested_quantity: int | None = None
     quantity: int
     price: float
     amount: float
     commission: float
     stamp_tax: float
     transfer_fee: float
+    realized_pnl: float = 0.0
     cash_after: float
 
 
@@ -229,6 +231,7 @@ class StrategySummaryOut(BaseModel):
     total_value: float
     total_return: float
     max_drawdown: float
+    realized_pnl: float = 0.0
     positions: list[PositionOut]
     trades: list[TradeOut]
     rejections: list[RejectionOut]
@@ -249,6 +252,7 @@ class AccountSummaryOut(BaseModel):
     total_value: float
     total_return: float
     max_drawdown: float
+    realized_pnl: float = 0.0
     positions: list[PositionOut]
     trades: list[TradeOut]
     rejections: list[RejectionOut]

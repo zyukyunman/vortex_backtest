@@ -56,6 +56,14 @@ class MinuteReplayEngine:
         strategies: list[Mapping[str, Any]] | None = None,
         execution: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """回放给定订单，产出成交/拒单/持仓/分钟净值/日净值/汇总（qfq 口径）。
+
+        撮合模型：订单为**日级**（trade_date + price_type），按 price_type 在当日**首分钟(open)
+        或末分钟(close)** 的 qfq 价成交；挂单合法性对 **raw 价**判定（tick/涨跌停/限价），撮合与
+        估值用 qfq；量能上限裁剪 → 部分成交（成交记录带 requested_quantity）；T+1 锁仓、分板手数、
+        费用（佣金 min5 / 印花仅卖 / 过户）见 market_rules。**非**日内逐 tick 触价撮合
+        （订单不带分钟时间戳；该能力为将来扩展）。
+        """
         if frequency != "1min":
             raise ValueError("unsupported_frequency")
         if price_adjustment != "qfq":
@@ -261,6 +269,19 @@ class MinuteReplayEngine:
                 )
             )
 
+        # 健壮性：订单所在 (symbol, 交易日) 当日无任何分钟 bar（停牌/无数据/非交易日）→
+        # 既不成交也不进 validate，显式记一条 no_market_data 拒单，避免订单"凭空消失"。
+        for order in orders:
+            key = (
+                order["symbol"],
+                date_key(order["trade_date"]),
+                order.get("price_type") or default_price_type,
+            )
+            if key not in execution_times:
+                rejections.append(
+                    rejection_row(strategy_id=strategy_id, order=order, reason="no_market_data")
+                )
+
         daily = daily_from_minutes(minute_snapshots, initial_cash, calendar)
         final_positions = position_rows(
             strategy_id=strategy_id,
@@ -279,6 +300,7 @@ class MinuteReplayEngine:
             "total_value": round_money(total_value),
             "total_return": round_ratio(total_value / initial_cash - 1 if initial_cash else 0.0),
             "max_drawdown": max_drawdown(daily),
+            "realized_pnl": round_money(sum(float(t.get("realized_pnl", 0.0)) for t in trades)),
             "positions": final_positions,
             "trades": trades,
             "rejections": rejections,
@@ -388,12 +410,16 @@ def execute_order(
     amount = quantity * price
     costs = fee_model.costs(side=side, quantity=quantity, price=price)
     total_fee = sum(costs.values())
+    realized_pnl = 0.0
     if side == int(Side.BUY):
         old_value = position.quantity * position.cost_basis
         position.quantity += quantity
         position.cost_basis = (old_value + amount) / position.quantity
         cash_after = cash - amount - total_fee
     else:
+        # 已实现盈亏（qfq 口径）：卖出价相对持仓成本的差额，减卖出端费用。
+        # 买入端费用买入时已从现金支出、未计入成本，故此处仅扣卖出费。
+        realized_pnl = quantity * (price - position.cost_basis) - total_fee
         position.quantity -= quantity
         position.sellable_quantity = max(position.sellable_quantity - quantity, 0)
         cash_after = cash + amount - total_fee
@@ -408,12 +434,16 @@ def execute_order(
             "symbol": order["symbol"],
             "side": side,
             "side_name": "BUY" if side == int(Side.BUY) else "SELL",
+            # requested_quantity = 原始下单量；quantity = 实际成交量（量能上限裁剪后），
+            # 二者不等即为部分成交，便于对账与透明展示。
+            "requested_quantity": int(order["quantity"]),
             "quantity": quantity,
             "price": round_money(price),
             "amount": round_money(amount),
             "commission": round_money(costs["commission"]),
             "stamp_tax": round_money(costs["stamp_tax"]),
             "transfer_fee": round_money(costs["transfer_fee"]),
+            "realized_pnl": round_money(realized_pnl),
             "cash_after": round_money(cash_after),
         },
         cash_after,
@@ -605,6 +635,7 @@ def aggregate_summaries(
         "total_value": round_money(total_value),
         "total_return": round_ratio(total_value / initial_cash - 1 if initial_cash else 0.0),
         "max_drawdown": max_drawdown(daily),
+        "realized_pnl": round_money(sum(float(item.get("realized_pnl", 0.0)) for item in strategy_summaries)),
         "positions": positions,
         "trades": trades,
         "rejections": rejections,
