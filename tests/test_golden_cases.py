@@ -210,3 +210,26 @@ def test_day_level_open_vs_close_backward_compat(tmp_path, workspace_builder):
     ], start=date(2026, 1, 2), end=date(2026, 1, 2))
     assert _one(s["trades"], request_id="o")["price"] == pytest.approx(10.0)
     assert _one(s["trades"], request_id="c")["price"] == pytest.approx(11.0)
+
+
+# ── Case L：分钟级——exec_time 早于开盘 → at-or-after 取首根 bar（开盘价）─────────
+def test_minute_level_exec_time_before_open_fills_at_open(tmp_path, workspace_builder):
+    ws = workspace_builder.day(
+        "2026-01-02", "000001.SZ", open=10.0, close=11.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
+    ).build()
+    s = _run(ws, tmp_path, orders=[_order("pre", "2026-01-02", "000001.SZ", 1, 1000, exec_time="08:00")],
+             start=date(2026, 1, 2), end=date(2026, 1, 2))
+    # 08:00 早于首根 09:31 → at-or-after 取首根（开盘价 10.0）
+    assert _one(s["trades"], request_id="pre")["price"] == pytest.approx(10.0)
+
+
+# ── Case M：分钟级——非法 exec_time 值直连引擎时兜底为 no_market_data（不崩溃）─────
+def test_minute_level_bad_exec_time_value_does_not_crash(tmp_path, workspace_builder):
+    ws = workspace_builder.day(
+        "2026-01-02", "000001.SZ", open=10.0, close=11.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
+    ).build()
+    # 绕过模型校验、直接喂引擎一个越界时刻 25:00 —— 引擎不能崩，应记 no_market_data
+    s = _run(ws, tmp_path, orders=[_order("bad", "2026-01-02", "000001.SZ", 1, 1000, exec_time="25:00")],
+             start=date(2026, 1, 2), end=date(2026, 1, 2))
+    assert s["trades"] == []
+    assert _one(s["rejections"], request_id="bad")["reason"] == "no_market_data"

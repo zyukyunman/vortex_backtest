@@ -521,6 +521,26 @@ def test_write_endpoints_require_token_when_configured(tmp_path: Path, monkeypat
     assert client.get("/accounts").status_code == 200
 
 
+def test_invalid_exec_time_rejected_by_api(tmp_path: Path) -> None:
+    """分钟级——错误时间的请求：非法格式 / 越界时刻一律 422；合法分钟回 201 且回显。"""
+    client = TestClient(create_app(tmp_path, run_worker=False))
+    client.post("/accounts", json={"account_id": "a", "initial_cash": 1_000_000})
+    base = {"trade_date": "2026-05-06", "symbol": "600000.SH", "side": 1, "quantity": 1000}
+    for bad in ("25:00", "24:00", "10:75", "10:30:99", "1030", "9:5", "abc", "10:3"):
+        r = client.post(
+            "/accounts/a/orders",
+            json={**base, "request_id": f"bad-{bad}", "exec_time": bad},
+        )
+        assert r.status_code == 422, f"exec_time={bad!r} 应被拒(422)，实得 {r.status_code}"
+    # 合法分钟 → 201，且回显 exec_time（验证 normalize_order 透传）
+    ok = client.post(
+        "/accounts/a/orders",
+        json={**base, "request_id": "ok", "exec_time": "10:30"},
+    )
+    assert ok.status_code == 201
+    assert ok.json()["exec_time"] == "10:30"
+
+
 def test_symbol_crosswalk_is_tushare_first_without_rqalpha_surface(tmp_path: Path) -> None:
     client = TestClient(create_app(tmp_path))
 

@@ -108,8 +108,12 @@ class OrderCreate(BaseModel):
         if value is None:
             return None
         v = str(value).strip()
-        if not re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", v):
+        m = re.fullmatch(r"(\d{2}):(\d{2})(?::(\d{2}))?", v)
+        if not m:
             raise ValueError("exec_time must be HH:MM or HH:MM:SS")
+        hour, minute, second = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+        if hour > 23 or minute > 59 or second > 59:
+            raise ValueError("exec_time out of range: HH 00-23, MM/SS 00-59")
         return v
 
 

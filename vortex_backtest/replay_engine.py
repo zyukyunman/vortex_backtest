@@ -410,7 +410,10 @@ def resolve_order_target(
         return None, None
     exec_time = order.get("exec_time")
     if exec_time:
-        target = pd.Timestamp(f"{order['trade_date'].isoformat()} {_norm_exec_time(exec_time)}")
+        try:
+            target = pd.Timestamp(f"{order['trade_date'].isoformat()} {_norm_exec_time(exec_time)}")
+        except (ValueError, TypeError):
+            return None, None  # 非法时刻（直连引擎、绕过模型校验时）兜底 → no_market_data，不崩
         for ts in ts_list:
             if ts >= target:
                 return ts, "close"
