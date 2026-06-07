@@ -31,8 +31,8 @@ class PriceAdjustment(StrEnum):
 
 
 class EngineName(StrEnum):
+    # 自研 A 股分钟撮合引擎（历史名 backtrader；qlib 引擎已于 2026-06-07 移除，见 design/14）
     BACKTRADER = "backtrader"
-    QLIB = "qlib"
 
 
 class Frequency(StrEnum):

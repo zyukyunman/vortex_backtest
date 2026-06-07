@@ -1,7 +1,7 @@
 # vortex_backtest 部署与操作指南
 
 两种跑法：**本地 venv**（开发 / 跑测试）和 **Docker 镜像**（部署 / 启动服务）。
-镜像里**只启动服务**（不含 qlib spike）。你只想用镜像起服务的话，直接看 §4。
+镜像里**只启动服务**。你只想用镜像起服务的话，直接看 §4。
 
 ---
 
@@ -9,7 +9,7 @@
 
 - 本地开发：**Python 3.12 或 3.13**。代码用了 3.11+ 的 `enum.StrEnum`——系统自带的 3.9 会报 `cannot import name 'StrEnum'`，Homebrew 的 3.14 的 `ensurepip` 是坏的，都别用。
 - 镜像部署：Docker（本机已装 Docker 29.5 + compose v5）。守护进程要在跑（`docker info` 正常）。
-- 数据来自 `vortex_data`（本地 workspace 或其 Qlib 导出目录）。
+- 数据来自 `vortex_data`（本地 workspace 的 parquet）。
 
 ---
 
@@ -117,8 +117,4 @@ curl http://127.0.0.1:8765/health
 - 阶段1 已修两个 qfq 口径 bug（C1 tick 打在复权价、C3 复权随窗口漂移）+ `limit_price` 用真实价 + adj≠1 测试，`pytest` 11/11 绿。
 - 全部提交在分支 `improve/phase-1`。合并到 main：`git checkout main && git merge improve/phase-1`。
 
----
-
-## 附：本地验证 Qlib（可选，不在服务镜像里）
-
-引擎迁移到 Qlib 前的验证脚本是 `spike/qlib_replay_spike.py`，在本地 venv 装 `.[spike]`（即 `pyqlib`）后跑，需要一份 qlib 数据。它**不属于服务镜像**——服务镜像不含 qlib，只跑当前服务。仅供引擎选型验证用。
+_（历史"附：本地验证 Qlib"小节已删除——qlib 引擎已于 2026-06-07 移除，见 design/14。）_

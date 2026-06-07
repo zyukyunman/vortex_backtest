@@ -2,7 +2,7 @@
 
 `POST /backtests` 只入队；真正的回测在这里执行：领取 queued 作业 → 跑引擎 →
 complete/fail。生产用后台守护线程 `JobWorker` 循环执行；测试可直接调用
-`drain_jobs(store)` 同步排空，保证确定性。引擎无关——迁移到 Qlib 后只换 `engine_for`。
+`drain_jobs(store)` 同步排空，保证确定性。引擎无关——换引擎只改 `engine_for`。
 """
 from __future__ import annotations
 
@@ -34,10 +34,6 @@ def engine_for(engine_name: str):
     engine = EngineName(engine_name)
     if engine == EngineName.BACKTRADER:
         return BacktraderMinuteReplayEngine()
-    if engine == EngineName.QLIB:
-        from .qlib_engine import QlibReplayEngine
-
-        return QlibReplayEngine()
     raise ValueError(f"unsupported engine: {engine_name}")
 
 

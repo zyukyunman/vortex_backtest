@@ -44,7 +44,7 @@ export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 
 ## 2. 核心概念
 
-- **账户 account**：一笔初始资金 + 一个引擎。默认引擎 `backtrader`（本机直接读 `stk_mins` 原始分钟，无需 Docker）；另有 `qlib`（仅 amd64 镜像内，需先用 vortex_data 导出 qlib 数据）。
+- **账户 account**：一笔初始资金 + 一个引擎（自研 A 股分钟撮合，枚举名 `backtrader`；本机直接读 `stk_mins` 原始分钟，无需 Docker）。
 - **订单 order**：挂在某个 **批次 `order_batch_id`** 下，含交易日、代码、方向（买=1/卖=2）、数量、可选限价。
 - **策略 strategy**：`strategy_id` + 它对应的 **订单批次**（`params.order_batch_id`）。一次回测可含多个策略，每个策略是**独立子账户**（各自一份初始资金）。
 - **作业 job**：一次回测。异步——POST 立即返回 `202 + job_id`，后台 worker 跑完置 `completed`。
@@ -222,8 +222,6 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | 写接口 403 | 绑了非回环 host 且没配 `VORTEX_BACKTEST_TOKEN`；本机回环默认放行 |
 | 基准为空 | 没设 `VORTEX_INDEX_DATA_DIR`（指向 `.../workspace/data/index_daily`） |
 | 看板图表不显示 | 已本地内置 Chart.js（`web/static/vendor/`），缺失会退到内联 SVG 静态预览 |
-| `qlib` 引擎跑不动 | 仅 amd64 镜像内可用，需先 `vortex-data export qlib --freq 1min` 导出数据 |
-
 ---
 
 ## 附：环境变量一览
@@ -236,4 +234,3 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权（非回环必配） | 任意密钥 |
 | `VORTEX_BACKTEST_BASE_URL` | CLI 客户端默认连的服务地址 | `http://127.0.0.1:8765` |
 | `VORTEX_BACKTEST_STATE_DIR` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
-| `VORTEX_QLIB_PROVIDER_URI` | qlib 引擎数据目录（镜像内） | `/qlib` |
