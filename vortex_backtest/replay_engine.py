@@ -123,6 +123,10 @@ class MinuteReplayEngine:
             )
             for strategy in resolved_strategies
         ]
+        # 取出各策略逐分钟净值，聚合成组合分钟净值；从 strategy_summaries 中剔除（不入 JSON/SQLite）。
+        minute_equity = aggregate_minute_equity(
+            [s.pop("_minutes", []) for s in strategy_summaries]
+        )
         summary = aggregate_summaries(
             account=account,
             job_id=job_id,
@@ -135,7 +139,7 @@ class MinuteReplayEngine:
             strategy_summaries=strategy_summaries,
         )
         report_dir.mkdir(parents=True, exist_ok=True)
-        summary["artifacts"] = write_reports(report_dir, summary)
+        summary["artifacts"] = write_reports(report_dir, summary, minute_equity=minute_equity)
         write_json(Path(summary["artifacts"]["account_summary"]), summary)
         return summary
 
@@ -164,17 +168,24 @@ class MinuteReplayEngine:
             if order.get("order_batch_id", "default") == order_batch_id
             and normalize_symbol(order["symbol"]) in symbols
         ]
-        orders_by_key: dict[tuple[str, int, str], list[dict[str, Any]]] = defaultdict(list)
+        # 把每个订单解析到一个**目标分钟时间戳**（open/close=当日首/末分钟；exec_time=at-or-after 该分钟），
+        # 再在该分钟成交。无可成交 bar（当日无行情 / exec_time 晚于收盘）→ no_market_data，订单不"凭空消失"。
+        axis = minute_axis(strategy_minutes)
+        rejections: list[dict[str, Any]] = []
+        orders_at: dict[tuple[str, pd.Timestamp], list[tuple[dict[str, Any], str]]] = defaultdict(list)
         for order in orders:
-            price_type = order.get("price_type") or default_price_type
-            orders_by_key[(order["symbol"], date_key(order["trade_date"]), price_type)].append(order)
+            target_ts, price_field = resolve_order_target(order, axis, default_price_type)
+            if target_ts is None:
+                rejections.append(
+                    rejection_row(strategy_id=strategy_id, order=order, reason="no_market_data")
+                )
+                continue
+            orders_at[(order["symbol"], target_ts)].append((order, price_field))
 
-        execution_times = execution_time_index(strategy_minutes)
         cash = initial_cash
         positions: dict[str, Position] = {}
         last_prices: dict[str, float] = {}
         trades: list[dict[str, Any]] = []
-        rejections: list[dict[str, Any]] = []
         minute_snapshots: list[dict[str, Any]] = []
         current_date_key: int | None = None
         trade_counter = 0
@@ -190,71 +201,61 @@ class MinuteReplayEngine:
 
             for symbol, row in row_by_symbol.items():
                 last_prices[symbol] = float(row["close_qfq"])
-                for price_type in ("open", "close"):
-                    if execution_times.get((symbol, row_date_key, price_type)) != timestamp:
+                for order, price_field in orders_at.get((symbol, timestamp), []):
+                    fill_price = float(row[f"{price_field}_qfq"])
+                    raw_fill_price = float(row[price_field])
+                    # 滑点：买入抬价、卖出压价（撮合/估值用 qfq 价）。bug#1：现金校验用含滑点
+                    # exec_price，与 execute_order 扣款口径一致，避免临界买单把现金打成负数。
+                    slip = slippage_bps / 1e4
+                    exec_price = (
+                        fill_price * (1 + slip)
+                        if int(order["side"]) == int(Side.BUY)
+                        else fill_price * (1 - slip)
+                    )
+                    position = positions.setdefault(symbol, Position())
+                    reason = rules.validate_order(
+                        order=order,
+                        bar=row,
+                        cash=cash,
+                        position_quantity=position.quantity,
+                        sellable_quantity=position.sellable_quantity,
+                        fill_price=exec_price,
+                        raw_fill_price=raw_fill_price,
+                    )
+                    if reason is not None:
+                        rejections.append(
+                            rejection_row(strategy_id=strategy_id, order=order, reason=reason)
+                        )
                         continue
-                    for order in orders_by_key.get((symbol, row_date_key, price_type), []):
-                        fill_price = float(row[f"{price_type}_qfq"])
-                        raw_fill_price = float(row[price_type])
-                        # 滑点：买入抬价、卖出压价（撮合/估值仍用 qfq 价）。bug#1 修复——
-                        # 现金充足性必须按**含滑点的成交价 exec_price** 校验，与下方 execute_order
-                        # 实际扣款口径一致；否则临界买单滑点未计入 → 成交后现金被打成负数。
-                        slip = slippage_bps / 1e4
-                        exec_price = (
-                            fill_price * (1 + slip)
-                            if int(order["side"]) == int(Side.BUY)
-                            else fill_price * (1 - slip)
-                        )
-                        position = positions.setdefault(symbol, Position())
-                        reason = rules.validate_order(
-                            order=order,
-                            bar=row,
-                            cash=cash,
-                            position_quantity=position.quantity,
-                            sellable_quantity=position.sellable_quantity,
-                            fill_price=exec_price,
-                            raw_fill_price=raw_fill_price,
-                        )
-                        if reason is not None:
-                            rejections.append(
-                                rejection_row(
-                                    strategy_id=strategy_id,
-                                    order=order,
-                                    reason=reason,
-                                )
+                    executable_quantity = rules.executable_quantity(
+                        side=int(order["side"]),
+                        requested_quantity=int(order["quantity"]),
+                        volume=int(row["volume"]),
+                        symbol=symbol,
+                        board=str(row["board"]),
+                        position_quantity=position.quantity,
+                    )
+                    if executable_quantity <= 0:
+                        rejections.append(
+                            rejection_row(
+                                strategy_id=strategy_id, order=order, reason="volume_cap_below_lot"
                             )
-                            continue
-                        executable_quantity = rules.executable_quantity(
-                            side=int(order["side"]),
-                            requested_quantity=int(order["quantity"]),
-                            volume=int(row["volume"]),
-                            symbol=symbol,
-                            board=str(row["board"]),
-                            position_quantity=position.quantity,
                         )
-                        if executable_quantity <= 0:
-                            rejections.append(
-                                rejection_row(
-                                    strategy_id=strategy_id,
-                                    order=order,
-                                    reason="volume_cap_below_lot",
-                                )
-                            )
-                            continue
-                        trade_counter += 1
-                        trade, cash = execute_order(
-                            strategy_id=strategy_id,
-                            trade_number=trade_counter,
-                            order=order,
-                            quantity=executable_quantity,
-                            price=exec_price,
-                            cash=cash,
-                            position=position,
-                            fee_model=rules.fee_model,
-                        )
-                        trades.append(trade)
-                        if position.quantity == 0:
-                            positions.pop(symbol, None)
+                        continue
+                    trade_counter += 1
+                    trade, cash = execute_order(
+                        strategy_id=strategy_id,
+                        trade_number=trade_counter,
+                        order=order,
+                        quantity=executable_quantity,
+                        price=exec_price,
+                        cash=cash,
+                        position=position,
+                        fee_model=rules.fee_model,
+                    )
+                    trades.append(trade)
+                    if position.quantity == 0:
+                        positions.pop(symbol, None)
 
             minute_snapshots.append(
                 minute_snapshot(
@@ -268,19 +269,6 @@ class MinuteReplayEngine:
                     frequency="1min",
                 )
             )
-
-        # 健壮性：订单所在 (symbol, 交易日) 当日无任何分钟 bar（停牌/无数据/非交易日）→
-        # 既不成交也不进 validate，显式记一条 no_market_data 拒单，避免订单"凭空消失"。
-        for order in orders:
-            key = (
-                order["symbol"],
-                date_key(order["trade_date"]),
-                order.get("price_type") or default_price_type,
-            )
-            if key not in execution_times:
-                rejections.append(
-                    rejection_row(strategy_id=strategy_id, order=order, reason="no_market_data")
-                )
 
         daily = daily_from_minutes(minute_snapshots, initial_cash, calendar)
         final_positions = position_rows(
@@ -305,6 +293,16 @@ class MinuteReplayEngine:
             "trades": trades,
             "rejections": rejections,
             "daily": daily,
+            # 逐分钟净值（slim）。run() 取出写 minute_equity.csv，不进 summary JSON/SQLite（规避 P4b 膨胀）。
+            "_minutes": [
+                {
+                    "timestamp": s["timestamp"],
+                    "cash": s["cash"],
+                    "market_value": s["market_value"],
+                    "total_value": s["total_value"],
+                }
+                for s in minute_snapshots
+            ],
         }
 
 
@@ -378,16 +376,49 @@ def normalize_order_row(order: Mapping[str, Any]) -> dict[str, Any]:
         "quantity": int(order["quantity"]),
         "price_type": order.get("price_type"),
         "limit_price": order.get("limit_price"),
+        "exec_time": order.get("exec_time"),
     }
 
 
-def execution_time_index(minutes: pd.DataFrame) -> dict[tuple[str, int, str], pd.Timestamp]:
-    result: dict[tuple[str, int, str], pd.Timestamp] = {}
+def minute_axis(minutes: pd.DataFrame) -> dict[tuple[str, int], list[pd.Timestamp]]:
+    """每个 (symbol, 交易日) 的有序分钟时间戳轴（升序）。"""
+    axis: dict[tuple[str, int], list[pd.Timestamp]] = {}
     for (symbol, row_date), rows in minutes.groupby(["symbol", "date"], sort=True):
         ordered = rows.sort_values("trade_time")
-        result[(str(symbol), int(row_date), "open")] = pd.Timestamp(ordered.iloc[0]["trade_time"])
-        result[(str(symbol), int(row_date), "close")] = pd.Timestamp(ordered.iloc[-1]["trade_time"])
-    return result
+        axis[(str(symbol), int(row_date))] = [pd.Timestamp(t) for t in ordered["trade_time"]]
+    return axis
+
+
+def _norm_exec_time(value: str) -> str:
+    v = str(value).strip()
+    return v if v.count(":") == 2 else f"{v}:00"
+
+
+def resolve_order_target(
+    order: Mapping[str, Any],
+    axis: Mapping[tuple[str, int], list[pd.Timestamp]],
+    default_price_type: str,
+) -> tuple[pd.Timestamp | None, str | None]:
+    """把订单解析为 (目标分钟时间戳, 取价字段 open/close)。
+
+    - `exec_time`(HH:MM[:SS]) → 当日 **at-or-after** 该时刻的首个分钟 bar（分钟级择时；取该 bar 的 close）。
+    - 否则按 `price_type` → 当日首分钟(open) / 末分钟(close)（日级，向后兼容）。
+    当日无 bar，或 `exec_time` 晚于当日最后一根 bar → 返回 (None, None)，调用方记 no_market_data。
+    """
+    ts_list = axis.get((str(order["symbol"]), date_key(order["trade_date"])))
+    if not ts_list:
+        return None, None
+    exec_time = order.get("exec_time")
+    if exec_time:
+        target = pd.Timestamp(f"{order['trade_date'].isoformat()} {_norm_exec_time(exec_time)}")
+        for ts in ts_list:
+            if ts >= target:
+                return ts, "close"
+        return None, None
+    price_type = order.get("price_type") or default_price_type
+    if price_type == "open":
+        return ts_list[0], "open"
+    return ts_list[-1], "close"
 
 
 def unlock_positions(positions: Mapping[str, Position]) -> None:
@@ -676,31 +707,37 @@ def aggregate_daily(strategy_summaries: list[dict[str, Any]], initial_cash: floa
     return daily
 
 
-def aggregate_minutes(strategy_summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for summary in strategy_summaries:
-        for snapshot in summary["minutes"]:
-            grouped[snapshot["timestamp"]].append(snapshot)
+def aggregate_minute_equity(per_strategy: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """各策略逐分钟净值（slim）按 timestamp 聚合成**组合**分钟净值（cash/市值/净值求和）。"""
+    grouped: dict[str, dict[str, float]] = {}
+    for rows in per_strategy:
+        for r in rows:
+            g = grouped.setdefault(
+                str(r["timestamp"]), {"cash": 0.0, "market_value": 0.0, "total_value": 0.0}
+            )
+            g["cash"] += float(r["cash"])
+            g["market_value"] += float(r["market_value"])
+            g["total_value"] += float(r["total_value"])
     result: list[dict[str, Any]] = []
-    for timestamp, snapshots in sorted(grouped.items()):
-        cash = sum(float(item["cash"]) for item in snapshots)
-        market_value = sum(float(item["market_value"]) for item in snapshots)
+    for timestamp in sorted(grouped):
+        g = grouped[timestamp]
         result.append(
             {
                 "timestamp": timestamp,
                 "frequency": "1min",
-                "cash": round_money(cash),
-                "market_value": round_money(market_value),
-                "total_value": round_money(cash + market_value),
-                "positions": flatten(item["positions"] for item in snapshots),
-                "trades": flatten(item["trades"] for item in snapshots),
-                "rejections": flatten(item["rejections"] for item in snapshots),
+                "cash": round_money(g["cash"]),
+                "market_value": round_money(g["market_value"]),
+                "total_value": round_money(g["total_value"]),
             }
         )
     return result
 
 
-def write_reports(report_dir: Path, summary: dict[str, Any]) -> dict[str, str]:
+def write_reports(
+    report_dir: Path,
+    summary: dict[str, Any],
+    minute_equity: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
     artifacts = {
         "account_summary": report_dir / "account_summary.json",
         "daily_equity": report_dir / "daily_equity.csv",
@@ -712,6 +749,9 @@ def write_reports(report_dir: Path, summary: dict[str, Any]) -> dict[str, str]:
     write_csv(artifacts["trades"], summary["trades"])
     write_csv(artifacts["positions"], summary["positions"])
     write_csv(artifacts["rejections"], summary["rejections"])
+    if minute_equity is not None:
+        artifacts["minute_equity"] = report_dir / "minute_equity.csv"
+        write_csv(artifacts["minute_equity"], minute_equity)
     return {key: str(path) for key, path in artifacts.items()}
 
 

@@ -70,9 +70,13 @@ def main() -> int:
     job_id = job["job_id"]
     print(f"job_id={job_id} status={job['status']}")
 
+    # 异步作业：先轮询到终态，completed 后才有 summary/daily 报告
+    job = poll_until_terminal(client, job_id)
+    if job.get("status") != "completed":
+        raise SystemExit(f"回测未成功完成：status={job.get('status')} error={job.get('error')}")
+
     summary = get(client, f"/backtests/{job_id}/summary")
     daily = get(client, f"/backtests/{job_id}/daily")
-    minutes = get(client, f"/backtests/{job_id}/minutes")
 
     print("\nFinal summary")
     print_jsonish(
@@ -91,7 +95,6 @@ def main() -> int:
                 for item in summary["strategies"]
             ],
             "daily_rows": len(daily),
-            "minute_rows": len(minutes),
             "artifacts": summary["artifacts"],
         }
     )
@@ -102,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a minute-level Vortex backtest HTTP sample from local Tushare workspace."
     )
-    parser.add_argument("--base-url", default="http://127.0.0.1:8765")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8767")
     parser.add_argument("--workspace", type=Path, default=DEFAULT_WORKSPACE)
     parser.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
     parser.add_argument("--days", type=int, default=25)
@@ -188,6 +191,20 @@ def get(client: httpx.Client, path: str) -> Any:
     if response.status_code >= 400:
         raise SystemExit(f"GET {path} failed: {response.status_code} {response.text}")
     return response.json()
+
+
+def poll_until_terminal(
+    client: httpx.Client, job_id: str, *, timeout: float = 600.0, interval: float = 1.0
+) -> Any:
+    """轮询作业直到终态（completed/failed/cancelled/interrupted）。"""
+    terminal = {"completed", "failed", "cancelled", "interrupted"}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = get(client, f"/backtests/{job_id}")
+        if job.get("status") in terminal:
+            return job
+        time.sleep(interval)
+    raise SystemExit(f"等待作业 {job_id} 超时（{timeout}s）")
 
 
 def normalize_date(value: Any) -> str:

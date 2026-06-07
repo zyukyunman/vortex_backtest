@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vortex_backtest 技术文档 · 设计 / 接口 / 部署</title>
+<style>
+:root{
+  --bg:#ffffff;--surface:#f7f8fa;--surface2:#eef1f5;--border:#e3e6eb;--text:#1a1f29;--muted:#5b6472;
+  --accent:#1d4ed8;--accent-soft:rgba(29,78,216,.10);--profit:#166534;--loss:#b91c1c;--warn:#b45309;
+  --code-bg:#f6f8fa;--code-fg:#1f2328;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --radius:8px;--sidebar-w:266px;--topbar-h:53px;--maxw:900px;
+}
+[data-theme=dark]{
+  --bg:#0f1419;--surface:#1a212b;--surface2:#222b37;--border:#2b333f;--text:#e6e9ee;--muted:#9aa4b2;
+  --accent:#60a5fa;--accent-soft:rgba(96,165,250,.14);--profit:#4ade80;--loss:#f87171;--warn:#fbbf24;
+  --code-bg:#0b1117;--code-fg:#d6dde6;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 system-ui,"PingFang SC",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--mono);font-size:.86em;background:var(--surface);padding:.12em .42em;border-radius:5px;border:.5px solid var(--border)}
+/* ---- 顶栏 ---- */
+.topbar{position:sticky;top:0;z-index:20;height:var(--topbar-h);display:flex;align-items:center;gap:14px;
+  padding:0 18px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:.5px solid var(--border)}
+.topbar .brand{font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px}
+.topbar .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+.topbar .ver{font-size:11px;color:var(--muted);border:.5px solid var(--border);border-radius:20px;padding:1px 8px}
+.topbar .spacer{flex:1}
+.topbar nav{display:flex;gap:4px;align-items:center}
+.topbar nav a{color:var(--muted);font-size:13px;padding:6px 9px;border-radius:7px}
+.topbar nav a:hover{background:var(--surface);color:var(--text);text-decoration:none}
+.iconbtn{font:inherit;color:var(--text);background:var(--surface);border:.5px solid var(--border);border-radius:7px;padding:5px 9px;cursor:pointer;font-size:13px}
+.iconbtn:hover{border-color:var(--accent)}
+.menubtn{display:none}
+/* ---- 布局 ---- */
+.layout{display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr)}
+.sidebar{position:sticky;top:var(--topbar-h);align-self:start;height:calc(100vh - var(--topbar-h));overflow:auto;
+  border-right:.5px solid var(--border);padding:18px 12px 60px;background:var(--bg)}
+.sidebar .grp{margin:16px 10px 5px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.sidebar .grp:first-child{margin-top:2px}
+.sidebar a{display:block;color:var(--muted);font-size:13.5px;padding:6px 11px;border-radius:7px;border-left:2px solid transparent;line-height:1.4}
+.sidebar a:hover{background:var(--surface);color:var(--text);text-decoration:none}
+.sidebar a.active{background:var(--accent-soft);color:var(--accent);border-left-color:var(--accent);font-weight:600}
+.content{min-width:0;display:flex;justify-content:center;padding:34px 44px 120px}
+.prose{width:100%;max-width:var(--maxw)}
+.prose h1{font-size:30px;font-weight:700;letter-spacing:-.01em;margin:0 0 6px}
+.prose .lead{color:var(--muted);font-size:16px;margin:0 0 28px}
+.prose h2{font-size:23px;font-weight:650;margin:46px 0 14px;padding-top:14px;border-top:.5px solid var(--border);scroll-margin-top:70px}
+.prose h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:10px;font-size:.78em;font-weight:600}
+.prose h3{font-size:17.5px;font-weight:650;margin:30px 0 10px;scroll-margin-top:70px}
+.prose p{margin:12px 0}
+.prose ul,.prose ol{margin:12px 0;padding-left:22px}
+.prose li{margin:5px 0}
+.prose strong{font-weight:650}
+.prose hr{border:0;border-top:.5px solid var(--border);margin:34px 0}
+.section{scroll-margin-top:70px}
+/* ---- 代码块 ---- */
+pre{background:var(--code-bg);color:var(--code-fg);border:.5px solid var(--border);border-radius:10px;
+  padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:13px;line-height:1.6;margin:14px 0}
+pre code{background:none;border:0;padding:0;font-size:inherit;color:inherit}
+.codewrap{position:relative}
+.codewrap .lang{position:absolute;top:8px;right:10px;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+/* ---- 表格 ---- */
+.tablewrap{overflow:auto;border:.5px solid var(--border);border-radius:10px;margin:16px 0}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+thead th{background:var(--surface);color:var(--muted);font-weight:600;font-size:12px;text-align:left;padding:9px 12px;border-bottom:.5px solid var(--border);white-space:nowrap}
+tbody td{padding:8px 12px;border-bottom:.5px solid var(--border);vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface)}
+td code,th code{white-space:nowrap}
+/* ---- 卡片 / 提示 ---- */
+.card{background:var(--bg);border:.5px solid var(--border);border-radius:12px;padding:16px 18px;margin:16px 0}
+.callout{display:flex;gap:11px;border:.5px solid var(--border);border-left-width:3px;border-radius:8px;padding:11px 14px;margin:16px 0;background:var(--surface);font-size:14px}
+.callout .ic{flex:none;font-size:15px;line-height:1.5}
+.callout.note{border-left-color:var(--accent)}
+.callout.warn{border-left-color:var(--warn)}
+.callout.tip{border-left-color:var(--profit)}
+.callout p{margin:0}
+/* ---- 徽章 / chip ---- */
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:20px;border:.5px solid var(--border)}
+.b-ok{background:rgba(22,101,52,.12);color:var(--profit);border-color:transparent}
+.b-run{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.b-idle{background:var(--surface2);color:var(--muted);border-color:transparent}
+.b-err{background:rgba(185,28,28,.12);color:var(--loss);border-color:transparent}
+.method{font-family:var(--mono);font-weight:700;font-size:12px;padding:1px 7px;border-radius:5px}
+.m-get{background:rgba(22,101,52,.13);color:var(--profit)}
+.m-post{background:var(--accent-soft);color:var(--accent)}
+.m-put{background:rgba(180,83,9,.15);color:var(--warn)}
+/* ---- 架构栈 ---- */
+.stack{display:flex;flex-direction:column;gap:8px;margin:18px 0}
+.stack .layer{border:.5px solid var(--border);border-radius:10px;padding:12px 15px;background:var(--surface)}
+.stack .layer b{display:block;font-size:14px;margin-bottom:2px}
+.stack .layer span{font-size:13px;color:var(--muted)}
+.stack .arrow{text-align:center;color:var(--muted);font-size:13px;margin:-2px 0}
+/* ---- 开闭环步骤 ---- */
+.steps{counter-reset:step;margin:18px 0;display:flex;flex-direction:column;gap:0}
+.steps .step{position:relative;padding:0 0 20px 42px;border-left:2px solid var(--border);margin-left:13px}
+.steps .step:last-child{border-left-color:transparent;padding-bottom:0}
+.steps .step::before{counter-increment:step;content:counter(step);position:absolute;left:-14px;top:-2px;width:27px;height:27px;
+  border-radius:50%;background:var(--accent);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.steps .step h4{margin:0 0 3px;font-size:15px}
+.steps .step .ep{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+/* ---- 状态机 ---- */
+.states{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:16px 0;font-size:13px}
+.states .st{border:.5px solid var(--border);border-radius:7px;padding:5px 11px;background:var(--surface);font-family:var(--mono)}
+.states .ar{color:var(--muted)}
+/* ---- 响应式 ---- */
+@media(max-width:880px){
+  :root{--sidebar-w:0px}
+  .menubtn{display:inline-block}
+  .layout{grid-template-columns:1fr}
+  .sidebar{position:fixed;left:0;top:var(--topbar-h);width:280px;z-index:18;transform:translateX(-100%);transition:transform .2s;box-shadow:0 10px 40px rgba(0,0,0,.18)}
+  .sidebar.open{transform:none}
+  .content{padding:24px 18px 100px}
+  .scrim{display:none;position:fixed;inset:var(--topbar-h) 0 0;background:rgba(0,0,0,.32);z-index:17}
+  .scrim.open{display:block}
+  .topbar nav .hide-sm{display:none}
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <button class="iconbtn menubtn" id="menuBtn" aria-label="目录">☰</button>
+  <div class="brand"><span class="dot"></span> vortex_backtest <span class="ver">技术文档</span></div>
+  <div class="spacer"></div>
+  <nav aria-label="外部链接">
+    <a class="hide-sm" href="/ui/">📊 看板</a>
+    <a href="/docs">🔌 Swagger</a>
+    <a class="hide-sm" href="/redoc">📑 ReDoc</a>
+    <button class="iconbtn" id="themeBtn" title="切换主题" aria-label="切换主题">🌓</button>
+  </nav>
+</header>
+
+<div class="scrim" id="scrim"></div>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="文档目录">
+    <div class="grp">系统设计</div>
+    <a href="#design-intro">服务定位</a>
+    <a href="#design-arch">整体架构</a>
+    <a href="#design-engine">引擎选型(自研 replay)</a>
+    <a href="#design-data">数据流与数据集</a>
+    <a href="#design-resources">资源模型</a>
+    <a href="#design-lifecycle">回测作业生命周期</a>
+    <a href="#design-rules">A 股撮合口径</a>
+    <a href="#design-report">多策略与报告口径</a>
+    <div class="grp">HTTP 接口协议</div>
+    <a href="#api-principles">设计原则</a>
+    <a href="#api-roundtrip">开闭环调用时序</a>
+    <a href="#api-endpoints">端点总览</a>
+    <a href="#api-schema">请求 / 响应 Schema</a>
+    <a href="#api-errors">错误码与拒单枚举</a>
+    <a href="#api-auth">写接口鉴权</a>
+    <div class="grp">环境部署</div>
+    <a href="#deploy-modes">两种跑法</a>
+    <a href="#deploy-local">本地 venv</a>
+    <a href="#deploy-docker">Docker / compose</a>
+    <a href="#deploy-k8s">组合镜像与 k8s</a>
+    <a href="#deploy-env">环境变量</a>
+    <a href="#deploy-cloud">迁移到云服务器</a>
+    <a href="#deploy-trouble">排错速查</a>
+  </nav>
+
+  <main class="content">
+    <article class="prose">
+      <h1>vortex_backtest 技术文档</h1>
+      <p class="lead">独立 HTTP 回测 / 账户回放服务 —— 接收账户、订单、策略配置,基于本地 Tushare 分钟数据做 A 股账户回放,输出成交、拒单、持仓、日净值与汇总报告。本页覆盖<strong>系统设计</strong>、<strong>HTTP 接口协议</strong>、<strong>环境部署</strong>三部分。</p>
+
+      <!-- ============ 模块一:系统设计 ============ -->
+      <section id="design-intro" class="section">
+        <h2><span class="n">1</span>系统设计</h2>
+        <p>vortex_backtest 是一个<strong>独立的 HTTP 服务</strong>:外部把<em>账户</em>、<em>历史委托(订单)</em>与<em>策略配置</em>提交进来,服务按真实 A 股规则在分钟行情上回放这些委托,产出可对账的成交 / 拒单 / 持仓 / 日净值 / 汇总报告。它<strong>只读消费</strong> vortex_data 导出的本地行情,自身不抓数据;第一阶段只做 A 股现金账户、<code>1min</code> 分钟、前复权 <code>qfq</code> 单一口径。</p>
+        <div class="callout note"><span class="ic">📌</span><p>定位是<strong>账户回放(replay)</strong>,不是因子/信号研究:输入是<strong>具体委托</strong>(symbol/side/qty/日期),不是从数据现算的信号。这条边界决定了引擎选型(见 1.3)。</p></div>
+      </section>
+
+      <section id="design-arch" class="section">
+        <h3>1.1 整体架构</h3>
+        <p>四层,自上而下:</p>
+        <div class="stack">
+          <div class="layer"><b>HTTP 协议层(FastAPI)</b><span>REST/JSON 端点、参数校验、写接口鉴权、托管看板 /ui 与文档站 /guide</span></div>
+          <div class="arrow">▲ 入队 / 轮询</div>
+          <div class="layer"><b>异步作业层(队列 + 后台 worker)</b><span>POST /backtests 入队即返回 job_id;worker 领取执行;崩溃重启自动重排残留作业</span></div>
+          <div class="arrow">▲ 调用引擎</div>
+          <div class="layer"><b>A 股撮合 / 规则层(自研 replay)</b><span>market_rules(T+1 / 涨跌停 / 手数 / 费用)+ replay_engine(撮合 / 账本 / 报告)</span></div>
+          <div class="arrow">▲ 按需读取</div>
+          <div class="layer"><b>本地数据层(Parquet 直读)</b><span>data_adapter 用 pyarrow 直读 vortex_data 的分区 parquet,按 symbol×日期/列裁剪</span></div>
+        </div>
+        <p>状态(账户 / 订单 / 作业 / 报告)落 SQLite + 报告产物落 <code>report_dir</code>;行情来自挂载的只读 workspace。</p>
+      </section>
+
+      <section id="design-engine" class="section">
+        <h3>1.2 引擎选型:自研 replay + 直读 parquet(已去 Qlib)</h3>
+        <p>引擎为自研 A 股分钟撮合引擎,枚举名 <code>replay</code>(前身误名 backtrader,2026-06-07 正名)。<strong>Qlib 已从回放关键路径删除</strong>(ADR-1 rev.2,2026-06-07 Accepted),原因:</p>
+        <ul>
+          <li><strong>实现现实</strong>:所谓"纯 qlib"引擎其实只用了 <code>D.features</code> 读数,<strong>撮合 / 账本从未走 Qlib 的 Exchange/Position</strong> —— 两次实现都自然地自研了撮合(Qlib 对现金不足是裁剪成部分成交,而本服务的产品语义是<strong>拒单</strong>)。</li>
+          <li><strong>运维现实</strong>:Qlib 需要 <code>.bin</code> 导出(519MB、6.6 万小文件),pivot 进内存是小服务器扛不住的根因;<code>pyqlib</code> 在 macOS arm64 装不上,被迫维护 amd64-only 容器。</li>
+          <li><strong>能力对照</strong>:T+1 锁仓、分板手数、印花税/过户费分项、拒单 reason code —— Qlib <strong>都不做</strong>,无论选型都得自写,而本服务已写好并测试。</li>
+        </ul>
+        <p>Qlib 不报废,降级为"将来真做因子/信号研究时才引入的<strong>独立研究线</strong>"(<code>NestedExecutor</code>/<code>impact_cost</code> 那时才值钱)。正确性验证改用更权威口径:<strong>手算金标准用例</strong>(覆盖 A 股规则)+ <strong>真实券商对账单回放</strong>。</p>
+      </section>
+
+      <section id="design-data" class="section">
+        <h3>1.3 数据流与数据集</h3>
+        <p>数据单向流动:<code>vortex_data 抓取/导出 → workspace(parquet)→ vortex_backtest 只读消费</code>。服务读 <code>$VORTEX_DATA_WORKSPACE/data</code> 下的数据集:</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>数据集</th><th>用途</th><th>缺失</th></tr></thead>
+          <tbody>
+            <tr><td><code>stk_mins</code></td><td>1min 主行情(回测主用)</td><td><code>minute_data_missing</code></td></tr>
+            <tr><td><code>adj_factor</code></td><td>复权因子 → 生成 qfq 分钟价</td><td><code>adjustment_data_missing</code></td></tr>
+            <tr><td><code>stk_limit</code></td><td>涨跌停价</td><td><code>market_rules_data_missing</code></td></tr>
+            <tr><td><code>suspend_d</code> / <code>stock_st</code></td><td>停复牌 / 历史 ST</td><td>缺表按"无停牌 / 非 ST"处理</td></tr>
+            <tr><td><code>instruments</code> / <code>calendar</code></td><td>标的主数据 / 交易日历</td><td>缺表退回代码规则 / 行情日期</td></tr>
+            <tr><td><code>index_daily</code></td><td>指数基准(看板对标)</td><td>基准曲线为空</td></tr>
+          </tbody>
+        </table></div>
+        <p>全链路 <strong>qfq 前复权</strong>:指标、买卖、成交、限价、持仓估值、净值都用前复权价;挂单合法性判 <em>raw</em> 价。第一阶段不建模现金分红。</p>
+      </section>
+
+      <section id="design-resources" class="section">
+        <h3>1.4 资源模型</h3>
+        <div class="tablewrap"><table>
+          <thead><tr><th>资源</th><th>说明</th><th>标识 / 生命周期</th></tr></thead>
+          <tbody>
+            <tr><td><strong>account</strong> 账户</td><td>一笔初始资金 + 引擎(replay)。可复用,可承载多次回测</td><td><code>account_id</code> / 持久</td></tr>
+            <tr><td><strong>order</strong> 订单</td><td>外部委托,挂在某 <code>order_batch_id</code> 批次下</td><td><code>account+batch+request_id</code> 幂等 / 持久</td></tr>
+            <tr><td><strong>backtest job</strong> 作业</td><td>一次回测 = 对账户某批次订单的一次回放</td><td><code>job_id</code>(UUID)/ 有状态机</td></tr>
+            <tr><td><strong>report</strong> 报告</td><td>完成后的日级净值/成交/拒单/持仓/汇总</td><td>随 <code>job_id</code></td></tr>
+            <tr><td><strong>strategy</strong> 策略</td><td>从历次作业按 <code>strategy_id</code> 派生的<strong>只读聚合</strong></td><td>派生,非写模型</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="design-lifecycle" class="section">
+        <h3>1.5 回测作业生命周期</h3>
+        <p>回测<strong>异步</strong>:提交即入队,后台 worker 执行,客户端轮询到终态再取报告。</p>
+        <div class="states">
+          <span class="st">queued</span><span class="ar">→</span>
+          <span class="st">running</span><span class="ar">→</span>
+          <span class="st">completed</span><span class="ar">|</span>
+          <span class="st">failed</span><span class="ar">|</span>
+          <span class="st">cancelled</span><span class="ar">|</span>
+          <span class="st">interrupted</span>
+        </div>
+        <div class="tablewrap"><table>
+          <thead><tr><th>status</th><th>含义</th><th>终态</th><th>可取报告</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge b-idle">queued</span></td><td>已入队待执行</td><td>否</td><td>否</td></tr>
+            <tr><td><span class="badge b-run">running</span></td><td>worker 执行中</td><td>否</td><td>否</td></tr>
+            <tr><td><span class="badge b-ok">completed</span></td><td>成功完成</td><td>是</td><td><strong>是</strong></td></tr>
+            <tr><td><span class="badge b-err">failed</span></td><td>失败(带安全错误码)</td><td>是</td><td>否</td></tr>
+            <tr><td><span class="badge b-idle">cancelled</span></td><td>排队中被取消</td><td>是</td><td>否</td></tr>
+            <tr><td><span class="badge b-idle">interrupted</span></td><td>重启时残留、已重排恢复</td><td>是</td><td>否</td></tr>
+          </tbody>
+        </table></div>
+        <p>取消(<code>POST /backtests/{job_id}/cancel</code>)仅能取消 <code>queued</code>;运行中无法安全中断 → 409。</p>
+      </section>
+
+      <section id="design-rules" class="section">
+        <h3>1.6 A 股撮合口径</h3>
+        <ul>
+          <li><strong>成交方式</strong>:订单为<strong>日级</strong>,按 <code>price_type</code> 在当日首/末分钟成交(非日内逐 tick 触价)。</li>
+          <li><strong>T+1</strong>:当日买入次日才可卖,违者拒为 <code>t_plus_1_not_sellable</code>。</li>
+          <li><strong>涨跌停</strong>:以 <code>stk_limit</code> 为准,涨停拦买、跌停拦卖。</li>
+          <li><strong>分板手数</strong>:主板 100 股/手,科创 ≥200,北交所另算;不足整手向下取整或拒单。</li>
+          <li><strong>量能上限</strong>:成交量受当日量限制(<code>max_volume_participation</code>)→ 部分成交。</li>
+          <li><strong>费用</strong>:佣金 0.03%(最低 5 元)、印花税 0.05%(仅卖出)、过户费 0.001%、可配 <code>slippage_bps</code> 滑点;均可在 <code>execution</code> 按回测覆盖。</li>
+          <li><strong>净值起点</strong>:所有净值曲线从 <strong>1.0</strong> 起。</li>
+        </ul>
+      </section>
+
+      <section id="design-report" class="section">
+        <h3>1.7 多策略与报告口径</h3>
+        <p><strong>多策略</strong>:一次回测可含多个策略,每个策略是<strong>独立子账户</strong>(各自初始资金 / 持仓 / 净值),用 <code>params.order_batch_id</code> 绑定各自订单批次,最终汇总聚合展示。</p>
+        <p><strong>报告口径 = 日级</strong>:每日净值 + 当日成交/拒单/持仓 + 摘要指标(收益、最大回撤、已实现盈亏等)。已移除分钟级输出(无 <code>/minutes</code>)。成交记录含 <code>realized_pnl</code>(已实现盈亏)与 <code>requested_quantity</code>(原始下单量,识别部分成交)。</p>
+      </section>
+      <!-- END:design -->
+
+      <!-- ============ 模块二:HTTP 接口协议 ============ -->
+      <section id="api-principles" class="section">
+        <h2><span class="n">2</span>HTTP 接口协议</h2>
+        <p>对外是 REST/JSON over HTTP,这是<strong>唯一</strong>的业务接入方式 —— 建账户、下单、提交回测、轮询、取报告全部走 HTTP,命令行只剩 <code>serve</code>(起服务)。Base URL:容器内 <code>http://0.0.0.0:8767</code>,本机默认 <code>http://127.0.0.1:8767</code>。在线可交互:<a href="/docs">/docs</a>(Swagger)、<a href="/redoc">/redoc</a>、<code>/openapi.json</code>。</p>
+        <h3>2.1 设计原则</h3>
+        <ul>
+          <li><strong>纯 HTTP,无 CLI 协议客户端</strong> —— 业务全走接口,易于被 k8s/其它服务编排。</li>
+          <li><strong>回测异步</strong> —— <code>POST /backtests</code> 入队即回 <code>202 + job_id</code>,轮询到终态再取报告。</li>
+          <li><strong>只读上游</strong> —— 行情来自 vortex_data 导出的 workspace,回测进程只读。</li>
+          <li><strong>写接口 fail-closed</strong> —— 见 2.6 鉴权。</li>
+        </ul>
+      </section>
+
+      <section id="api-roundtrip" class="section">
+        <h3>2.2 开闭环调用时序</h3>
+        <p>用户视角的「开始 → 提交买卖 → 结束 → 关闭 → 报告」全流程,对应示例脚本 <code>scripts/backtest_roundtrip.sh</code>:</p>
+        <div class="steps">
+          <div class="step"><h4>建账户</h4><div class="ep"><span class="method m-post">POST</span> /accounts → 201 {account_id, …}</div></div>
+          <div class="step"><h4>提交买卖(可多次)</h4><div class="ep"><span class="method m-post">POST</span> /accounts/{id}/orders → 201</div></div>
+          <div class="step"><h4>结束 = 提交回测</h4><div class="ep"><span class="method m-post">POST</span> /backtests → 202 {job_id, status:"queued"}</div></div>
+          <div class="step"><h4>关闭 = 轮询到终态</h4><div class="ep"><span class="method m-get">GET</span> /backtests/{job_id} 反复轮询</div></div>
+          <div class="step"><h4>输出报告</h4><div class="ep"><span class="method m-get">GET</span> /backtests/{job_id}/summary | /daily | /trades | /rejections</div></div>
+        </div>
+        <div class="codewrap"><span class="lang">bash</span><pre><code>B=http://127.0.0.1:8767
+
+# ① 建账户
+curl -s -XPOST $B/accounts -H 'Content-Type: application/json' \
+  -d '{"account_id":"demo","initial_cash":1000000,"name":"演示"}'
+
+# ② 提交买卖(side: 1=买 2=卖)
+curl -s -XPOST $B/accounts/demo/orders -H 'Content-Type: application/json' \
+  -d '{"order_batch_id":"b1","request_id":"buy-1","trade_date":"2026-05-06","symbol":"600000.SH","side":1,"quantity":1000}'
+
+# ③ 结束回测 = 提交作业(异步,拿 job_id)
+JOB=$(curl -s -XPOST $B/backtests -H 'Content-Type: application/json' \
+  -d '{"account_id":"demo","order_batch_id":"b1","start_date":"2026-05-06","end_date":"2026-06-05"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+
+# ④ 关闭 = 轮询到终态
+until curl -s $B/backtests/$JOB | python3 -c 'import sys,json;s=json.load(sys.stdin)["status"];print(s);exit(0 if s in {"completed","failed","cancelled","interrupted"} else 1)'; do sleep 1; done
+
+# ⑤ 输出报告
+curl -s $B/backtests/$JOB/summary</code></pre></div>
+        <div class="callout tip"><span class="ic">⚡</span><p>这一整套已封装进 <code>scripts/backtest_roundtrip.sh</code>(仅依赖 curl + python3):<code>scripts/backtest_roundtrip.sh --symbol 600000.SH --start 2026-05-06 --end 2026-06-05</code>。</p></div>
+      </section>
+
+      <section id="api-endpoints" class="section">
+        <h3>2.3 端点总览</h3>
+        <p><strong>写接口</strong>(需鉴权,见 2.6):</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>方法</th><th>路径</th><th>成功</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method m-post">POST</span></td><td><code>/accounts</code></td><td>201</td><td>建账户;<code>account_id</code> 重复 → 409</td></tr>
+            <tr><td><span class="method m-post">POST</span></td><td><code>/accounts/{id}/orders</code></td><td>201</td><td>下单;幂等键 <code>account+batch+request_id</code> 重复 → 409</td></tr>
+            <tr><td><span class="method m-post">POST</span></td><td><code>/backtests</code></td><td><strong>202</strong></td><td>提交回测,入队返回 <code>job_id</code>;不支持参数 → 400(不入队)</td></tr>
+            <tr><td><span class="method m-post">POST</span></td><td><code>/backtests/{job_id}/cancel</code></td><td>200</td><td>取消排队中作业;运行中/已终态 → 409</td></tr>
+            <tr><td><span class="method m-put">PUT</span></td><td><code>/strategies/{id}/meta?account_id=</code></td><td>200</td><td>设收藏/置顶/标签</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>只读 / 报告接口</strong>:</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/health</code></td><td>健康检查 <code>{"status":"ok"}</code></td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/accounts</code> · <code>/accounts/{id}</code></td><td>账户列表 / 详情</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/accounts/{id}/orders</code></td><td>账户订单,<code>?order_batch_id=&amp;start_date=&amp;end_date=</code></td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/accounts/{id}/summary</code> · <code>/positions</code></td><td>账户<strong>最近一次完成</strong>回测的汇总 / 持仓</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/symbols/{symbol}</code></td><td>代码 ↔ 板块 / 手数 / 各市场代码</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests?account_id=&amp;status=</code></td><td>作业列表(含派生 <code>strategy_ids</code>)</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}</code></td><td>作业状态 + 进度 <code>progress</code></td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/summary</code></td><td>账户级汇总 + 各策略 + 日级 <code>daily</code></td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/daily</code> · <code>/daily/{trade_date}</code></td><td>日级净值序列 / 某日快照</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/trades</code></td><td>成交,<code>?trade_date=&amp;symbol=&amp;strategy_id=&amp;limit=&amp;offset=</code>(响应头 <code>X-Total-Count</code>)</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/rejections</code> · <code>/rejections/summary</code></td><td>拒单(同上过滤)/ 按原因计数</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/equity</code></td><td>净值曲线(起点 1.0)+ 回撤 + 可选基准,<code>?strategy_id=&amp;benchmark=&amp;rebase=</code></td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/metrics</code></td><td>绩效指标(&lt;60 交易日 <code>low_confidence=true</code>)</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/benchmarks</code></td><td>可选基准目录(000300.SH 等)</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>策略中心</strong>(按 <code>strategy_id</code> 派生的只读聚合,看板用):</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/strategies?account_id=&amp;best_metric=</code></td><td>策略列表:n_runs / 最新 / 最优 / 标的</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/strategies/{id}?account_id=&amp;benchmark=</code></td><td>策略详情:净值 + 持仓 + 成交 + <code>latest_job_id</code></td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/leaderboard?metric=&amp;scope=&amp;top=</code></td><td>排行榜(多指标;best/latest)</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/strategies/compare?ids=a,b&amp;benchmark=</code></td><td>A/B 对比:净值叠加 + 指标并排</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="api-schema" class="section">
+        <h3>2.4 请求 / 响应 Schema</h3>
+        <p>关键请求体(完整字段与响应见 <a href="/docs">/docs</a> 的 OpenAPI):</p>
+        <div class="codewrap"><span class="lang">json</span><pre><code>// POST /accounts
+{ "account_id": "demo", "initial_cash": 1000000, "engine": "replay", "name": "演示" }
+
+// POST /accounts/{id}/orders   (side: 1=买 2=卖)
+{ "order_batch_id": "b1", "request_id": "buy-1", "trade_date": "2026-05-06",
+  "symbol": "600000.SH", "side": 1, "quantity": 1000, "limit_price": 10.50 }
+
+// POST /backtests   (strategies 省略=按 order_batch_id 单策略回放)
+{ "account_id": "demo", "order_batch_id": "b1",
+  "start_date": "2026-05-06", "end_date": "2026-06-05",
+  "frequency": "1min", "price_adjustment": "qfq", "default_price_type": "close",
+  "strategies": [
+    {"strategy_id":"main","symbols":["600000.SH"],"params":{"order_batch_id":"b1"}}
+  ],
+  "execution": {"commission_rate":0.0003,"min_commission":5,"stamp_tax_rate":0.0005,
+                "transfer_fee_rate":0.00001,"max_volume_participation":1.0,"slippage_bps":0} }</code></pre></div>
+        <div class="callout note"><span class="ic">📌</span><p>同步校验(立即 400,不入队):<code>frequency</code> 必须 <code>1min</code>、<code>price_adjustment</code> / <code>order_price_adjustment</code> 必须 <code>qfq</code>。<code>start_date</code>/<code>end_date</code> 缺失会让作业 <code>failed: start_end_required</code>。</p></div>
+        <p>汇总响应 <code>GET /backtests/{job_id}/summary</code> 顶层:<code>cash / market_value / total_value / total_return / max_drawdown / realized_pnl</code> + <code>positions[] / trades[] / rejections[] / daily[] / strategies[] / artifacts{}</code>。</p>
+      </section>
+
+      <section id="api-errors" class="section">
+        <h3>2.5 错误码与拒单枚举</h3>
+        <p><strong>HTTP 错误码</strong>:<code>400</code> 参数不支持 · <code>401</code> 未授权 · <code>403</code> 写接口被禁(非回环且无 token) · <code>404</code> 资源不存在 · <code>409</code> 冲突(重复/不可取消) · <code>422</code> 字段校验失败。</p>
+        <p><strong>作业安全错误码</strong>(<code>failed</code> 时回传,完整堆栈只进服务端日志):</p>
+        <p><code>minute_data_missing</code> · <code>adjustment_data_missing</code> · <code>market_rules_data_missing</code> · <code>no_symbols</code> · <code>start_end_required</code> · <code>unsupported_frequency</code> · <code>unsupported_price_adjustment</code> · <code>unsupported_strategy_type</code> · <code>missing_request_payload</code>;其余脱敏为 <code>internal_error</code>。</p>
+        <p><strong>拒单原因枚举</strong>(<code>rejections[].reason</code>,看板做中文化):</p>
+        <p><code>suspended</code> · <code>zero_volume</code> · <code>invalid_price_tick</code> · <code>invalid_lot_size</code> · <code>limit_up_buy_blocked</code> · <code>limit_down_sell_blocked</code> · <code>insufficient_cash</code> · <code>insufficient_position</code> · <code>t_plus_1_not_sellable</code> · <code>volume_cap_below_lot</code>。</p>
+      </section>
+
+      <section id="api-auth" class="section">
+        <h3>2.6 写接口鉴权</h3>
+        <p>写接口 = 建账户 / 下单 / 提交回测 / 取消 / 设 meta。规则:</p>
+        <ul>
+          <li><strong>配了</strong> <code>VORTEX_BACKTEST_TOKEN</code>:请求须带 <code>Authorization: Bearer &lt;token&gt;</code> 或 <code>X-Auth-Token: &lt;token&gt;</code>,否则 <code>401</code>。</li>
+          <li><strong>没配</strong> token:仅本机回环放行;绑到非回环 host(如 <code>0.0.0.0</code>)时写接口直接 <code>403</code>(fail-closed,避免裸暴露)。</li>
+        </ul>
+        <p>只读 / 报告接口不鉴权。对外暴露务必先配 token,再放开绑定地址。</p>
+      </section>
+      <!-- END:api -->
+
+      <!-- ============ 模块三:环境部署 ============ -->
+      <section id="deploy-modes" class="section">
+        <h2><span class="n">3</span>环境部署</h2>
+        <p>两种跑法:<strong>本地 venv</strong>(开发 / 跑测试)与 <strong>Docker 镜像</strong>(部署 / 起服务)。镜像里<strong>只启动服务</strong>。只想用镜像起服务的话直接看 3.3。规范端口 <strong>8767</strong>(避开 vortex_data 的 8765)。</p>
+        <div class="callout warn"><span class="ic">⚠️</span><p>代码用了 3.11+ 的 <code>enum.StrEnum</code> —— 必须 <strong>Python 3.12 / 3.13</strong>;系统自带 3.9/3.10 会报 <code>cannot import name 'StrEnum'</code>。</p></div>
+      </section>
+
+      <section id="deploy-local" class="section">
+        <h3>3.1 本地 venv(开发 / 测试)</h3>
+        <div class="codewrap"><span class="lang">bash</span><pre><code>cd /path/to/vortex_backtest
+python3.13 -m venv .venv            # 或 python3.12
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest -q       # 跑测试
+
+# 指向行情数据(loader 自动接 /data)
+export VORTEX_DATA_WORKSPACE=/path/to/vortex_data/workspace
+export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily   # 基准曲线,可选
+
+# 起服务(命令行只剩 serve;默认 127.0.0.1:8767)
+.venv/bin/vortex-backtest serve --port 8767
+curl http://127.0.0.1:8767/health   # {"status":"ok"}</code></pre></div>
+        <p>起好后:看板 <a href="/ui/">/ui/</a> · 交互式 API <a href="/docs">/docs</a> · 本文档 <code>/guide</code>。回测调用见 2.2(脚本或 curl)。</p>
+      </section>
+
+      <section id="deploy-docker" class="section">
+        <h3>3.2 Docker / compose(部署,推荐)</h3>
+        <p>应用镜像 <code>FROM vortex-base</code>(统一依赖底座,由 vortex_common 构建),只叠本仓代码(<code>pip install --no-deps</code>),改代码秒级重建。<strong>前提:基础镜像 <code>vortex-base:latest</code> 必须已存在</strong>:</p>
+        <div class="codewrap"><span class="lang">bash</span><pre><code>(cd ../vortex_common && scripts/build-base-image.sh)   # 仅首次 / base 变更时
+
+cd /path/to/vortex_backtest
+cp .env.example .env                # 改 VORTEX_BACKTEST_WORKSPACE 指向你的数据目录
+docker compose up -d --build        # 构建本仓代码并起服务(端口默认 8767)
+curl http://127.0.0.1:8767/health   # {"status":"ok"}
+docker compose logs -f              # 看日志
+docker compose down                 # 停服务</code></pre></div>
+        <ul>
+          <li><strong>卷</strong>:<code>/workspace</code> = 数据(默认<strong>只读</strong>挂载,来自 <code>VORTEX_BACKTEST_WORKSPACE</code>);<code>/state</code> = 账户 / 订单 / 作业 / 报告(可写)。</li>
+          <li><strong>端口</strong>:默认只绑 <code>127.0.0.1:8767</code>(仅本机)。要对外暴露:<code>.env</code> 设 <code>VORTEX_BACKTEST_BIND_ADDR=0.0.0.0</code>,并<strong>先配</strong> <code>VORTEX_BACKTEST_TOKEN</code>(写接口鉴权)。</li>
+        </ul>
+        <p>不用 compose 的等价命令:</p>
+        <div class="codewrap"><span class="lang">bash</span><pre><code>docker build --build-arg BASE_IMAGE=vortex-base:latest -t vortex-backtest:latest .
+docker run -d --name vortex-backtest \
+  -p 127.0.0.1:8767:8767 \
+  -v /path/to/workspace:/workspace:ro \
+  -v "$(pwd)/state:/state" \
+  vortex-backtest:latest</code></pre></div>
+      </section>
+
+      <section id="deploy-k8s" class="section">
+        <h3>3.3 组合镜像与 k8s(一进程一容器)</h3>
+        <p>整个 Vortex 的发布形态(vortex_common ADR-001):<strong>一个版本化镜像 <code>vortex:&lt;tag&gt;</code> 内含全部服务代码,运行时每服务一个容器</strong>(与 k8s 对齐,崩溃隔离、独立重启 —— qmt 实盘与 backtest 重算彻底分开)。</p>
+        <div class="codewrap"><span class="lang">bash</span><pre><code># 在 vortex_common:按 deploy/versions.yml 各仓 tag 造组合镜像
+deploy/build-release.sh
+# 每服务一容器(同一镜像 + 不同 command: vortexctl &lt;svc&gt;)
+docker compose -f deploy/docker-compose.yml up -d</code></pre></div>
+        <p><strong>启动契约</strong>:common 的 <code>vortexctl backtest</code> 优先执行本仓 <code>deploy/run.sh</code>(自描述如何起自己),缺失则回退内置默认 <code>vortex-backtest serve</code>。<strong>规范端口</strong>(容器内):</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>服务</th><th>端口</th><th>命名卷</th></tr></thead>
+          <tbody>
+            <tr><td>vortex_data</td><td>8765</td><td>vortex-workspace(读写)</td></tr>
+            <tr><td>vortex_qmt</td><td>8810</td><td>vortex-qmt-state</td></tr>
+            <tr><td><strong>vortex_backtest</strong></td><td><strong>8767</strong></td><td>vortex-workspace(只读)+ vortex-backtest-state</td></tr>
+            <tr><td>vortex_trader(预留)</td><td>8820</td><td>vortex-trader-state</td></tr>
+          </tbody>
+        </table></div>
+        <p>升级 k8s:每个 compose 服务 → 一个 Deployment(同镜像换 <code>command</code>)。镜像内非 root 用户 <code>vortex</code>(uid 1000)+ 命名卷规避 bind-mount uid 错配。</p>
+      </section>
+
+      <section id="deploy-env" class="section">
+        <h3>3.4 环境变量</h3>
+        <div class="tablewrap"><table>
+          <thead><tr><th>变量</th><th>作用</th><th>默认 / 示例</th></tr></thead>
+          <tbody>
+            <tr><td><code>VORTEX_DATA_WORKSPACE</code></td><td>行情 workspace 根(自动接 <code>/data</code>)</td><td>—(漏配回测报 <code>minute_data_missing</code>)</td></tr>
+            <tr><td><code>VORTEX_INDEX_DATA_DIR</code></td><td>指数基准目录</td><td><code>$WORKSPACE/data/index_daily</code></td></tr>
+            <tr><td><code>VORTEX_BACKTEST_HOST</code> / <code>PORT</code></td><td>服务监听地址</td><td><code>127.0.0.1</code> / <code>8767</code></td></tr>
+            <tr><td><code>VORTEX_BACKTEST_STATE_DIR</code></td><td>状态库目录(账户/作业/报告)</td><td>容器内 <code>/state</code></td></tr>
+            <tr><td><code>VORTEX_BACKTEST_TOKEN</code></td><td>写接口鉴权(非回环必配)</td><td>空</td></tr>
+            <tr><td><code>BASE_URL</code></td><td>开闭环脚本默认连的服务地址</td><td><code>http://127.0.0.1:8767</code></td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="deploy-cloud" class="section">
+        <h3>3.5 迁移到云服务器</h3>
+        <ol>
+          <li>服务器装 Docker Engine + compose 插件(<code>docker info</code> 正常)。</li>
+          <li>拉代码(或把镜像推私有 registry 再拉);先在该机构建 <code>vortex-base</code>。</li>
+          <li>准备数据目录(来自 vortex_data 导出),把 <code>.env</code> 的 <code>VORTEX_BACKTEST_WORKSPACE</code> 指过去。</li>
+          <li><code>docker compose up -d --build</code> → <code>curl http://127.0.0.1:8767/health</code>。</li>
+          <li>对外服务:配 <code>VORTEX_BACKTEST_TOKEN</code> + <code>VORTEX_BACKTEST_BIND_ADDR=0.0.0.0</code>,前置反代/防火墙。</li>
+        </ol>
+      </section>
+
+      <section id="deploy-trouble" class="section">
+        <h3>3.6 排错速查</h3>
+        <div class="tablewrap"><table>
+          <thead><tr><th>现象</th><th>原因 / 处理</th></tr></thead>
+          <tbody>
+            <tr><td><code>No module named 'pandas'</code></td><td>用了系统 python → 用 <code>.venv/bin/python</code>,<code>pip install -e '.[dev]'</code></td></tr>
+            <tr><td><code>cannot import name 'StrEnum'</code></td><td>Python &lt; 3.11 → 用 3.12 / 3.13 建 venv</td></tr>
+            <tr><td>缺 <code>vortex-base:latest</code></td><td><code>(cd ../vortex_common && scripts/build-base-image.sh)</code> 后重试</td></tr>
+            <tr><td>回测 <code>minute_data_missing</code></td><td>workspace 缺 <code>stk_mins</code>,或订单日期落在数据窗口外</td></tr>
+            <tr><td><code>unsupported_frequency</code> / <code>price_adjustment</code></td><td>仅支持 <code>1min</code> / <code>qfq</code>,按约定传参</td></tr>
+            <tr><td>写接口 <code>403</code></td><td>绑了非回环 host 但没配 <code>VORTEX_BACKTEST_TOKEN</code></td></tr>
+            <tr><td>端口被占</td><td><code>lsof -ti tcp:8767 | xargs kill -9</code> 后重启</td></tr>
+            <tr><td><code>docker build</code> 拉 base 慢</td><td><code>~/.docker/daemon.json</code> 配 <code>registry-mirrors</code> 后重启 Docker</td></tr>
+          </tbody>
+        </table></div>
+        <p class="muted" style="margin-top:24px;font-size:13px">vortex_backtest 技术文档 · 系统设计 / HTTP 接口协议 / 环境部署 · 接口契约源 design/10,部署源 docs/operations。</p>
+      </section>
+      <!-- END:deploy -->
+
+    </article>
+  </main>
+</div>
+
+<script>
+(function(){
+  // 主题:localStorage 记忆
+  var root=document.documentElement, KEY="vbt_doc_theme";
+  try{var t=localStorage.getItem(KEY); if(t) root.setAttribute("data-theme",t);}catch(e){}
+  document.getElementById("themeBtn").addEventListener("click",function(){
+    var cur=root.getAttribute("data-theme")==="dark"?"light":"dark";
+    root.setAttribute("data-theme",cur); try{localStorage.setItem(KEY,cur);}catch(e){}
+  });
+  // 移动端目录抽屉
+  var sb=document.getElementById("sidebar"), scrim=document.getElementById("scrim");
+  function toggle(open){sb.classList.toggle("open",open);scrim.classList.toggle("open",open);}
+  document.getElementById("menuBtn").addEventListener("click",function(){toggle(!sb.classList.contains("open"));});
+  scrim.addEventListener("click",function(){toggle(false);});
+  // scrollspy:高亮当前小节
+  var links=[].slice.call(document.querySelectorAll('.sidebar a[href^="#"]'));
+  var map={}; links.forEach(function(a){var id=a.getAttribute("href").slice(1);var el=document.getElementById(id);if(el)map[id]=a;});
+  var ids=Object.keys(map);
+  function onScroll(){
+    var top=70, cur=null;
+    for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el&&el.getBoundingClientRect().top<=top)cur=ids[i];}
+    links.forEach(function(a){a.classList.remove("active");});
+    if(cur&&map[cur])map[cur].classList.add("active");
+  }
+  document.addEventListener("scroll",onScroll,{passive:true});
+  // 点击目录后在移动端收起
+  links.forEach(function(a){a.addEventListener("click",function(){if(window.innerWidth<=880)toggle(false);});});
+  onScroll();
+})();
+</script>
+</body>
+</html>

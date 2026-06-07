@@ -157,3 +157,56 @@ def test_order_on_day_without_data_is_rejected(tmp_path, workspace_builder):
              start=date(2026, 1, 2), end=date(2026, 1, 5))
     assert s["trades"] == []
     assert _one(s["rejections"], request_id="ghost")["reason"] == "no_market_data"
+
+
+# ── Case H：分钟级——exec_time 在指定分钟成交，取该分钟价（首/末分钟价不同）──────────
+def test_minute_level_exec_time_fills_at_that_minute(tmp_path, workspace_builder):
+    # 09:31 bar 价=10（开盘），14:57 bar 价=11（收盘）
+    ws = workspace_builder.day(
+        "2026-01-02", "000001.SZ", open=10.0, close=11.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
+    ).build()
+    s = _run(ws, tmp_path, orders=[
+        _order("am", "2026-01-02", "000001.SZ", 1, 1000, exec_time="09:31"),
+        _order("pm", "2026-01-02", "000001.SZ", 1, 1000, exec_time="14:57"),
+    ], start=date(2026, 1, 2), end=date(2026, 1, 2))
+    assert _one(s["trades"], request_id="am")["price"] == pytest.approx(10.0)   # 首分钟价
+    assert _one(s["trades"], request_id="pm")["price"] == pytest.approx(11.0)   # 末分钟价
+    # 逐分钟净值 artifact 应已落盘且含数据行
+    mins = Path(s["artifacts"]["minute_equity"])
+    assert mins.exists()
+    assert sum(1 for _ in mins.open(encoding="utf-8")) > 1
+
+
+# ── Case I：exec_time 落在两根 bar 之间 → at-or-after 取下一根可成交 bar ───────────
+def test_minute_level_exec_time_at_or_after(tmp_path, workspace_builder):
+    ws = workspace_builder.day(
+        "2026-01-02", "000001.SZ", open=10.0, close=11.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
+    ).build()
+    s = _run(ws, tmp_path, orders=[_order("mid", "2026-01-02", "000001.SZ", 1, 1000, exec_time="10:00")],
+             start=date(2026, 1, 2), end=date(2026, 1, 2))
+    # 10:00 之后首个 bar 是 14:57 → 按 11.0 成交
+    assert _one(s["trades"], request_id="mid")["price"] == pytest.approx(11.0)
+
+
+# ── Case J：exec_time 晚于当日收盘 → no_market_data ─────────────────────────
+def test_minute_level_exec_time_after_close_rejected(tmp_path, workspace_builder):
+    ws = workspace_builder.day(
+        "2026-01-02", "000001.SZ", open=10.0, close=11.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
+    ).build()
+    s = _run(ws, tmp_path, orders=[_order("late", "2026-01-02", "000001.SZ", 1, 1000, exec_time="15:30")],
+             start=date(2026, 1, 2), end=date(2026, 1, 2))
+    assert s["trades"] == []
+    assert _one(s["rejections"], request_id="late")["reason"] == "no_market_data"
+
+
+# ── Case K：日级向后兼容——price_type open 取首分钟价、close 取末分钟价 ─────────────
+def test_day_level_open_vs_close_backward_compat(tmp_path, workspace_builder):
+    ws = workspace_builder.day(
+        "2026-01-02", "000001.SZ", open=10.0, close=11.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
+    ).build()
+    s = _run(ws, tmp_path, orders=[
+        _order("o", "2026-01-02", "000001.SZ", 1, 1000, price_type="open"),
+        _order("c", "2026-01-02", "000001.SZ", 1, 1000, price_type="close"),
+    ], start=date(2026, 1, 2), end=date(2026, 1, 2))
+    assert _one(s["trades"], request_id="o")["price"] == pytest.approx(10.0)
+    assert _one(s["trades"], request_id="c")["price"] == pytest.approx(11.0)

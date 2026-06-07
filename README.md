@@ -8,7 +8,7 @@ HTTP 协议层 + 异步作业 + A 股分钟撮合/规则层 + Tushare 本地 Par
 
 服务不再维护 RQAlpha adapter，也不再维护旧 `ashare_replay` fallback。第一阶段只支持 A 股现金账户、`1min` 分钟回测、前复权 `qfq` 单一口径、多策略独立账户回放。
 
-架构评审 / 引擎选型 / 协议 / 路线图见 `design/01`–`design/10`；部署与命令行见 [docs/operations.md](docs/operations.md)；HTTP 协议与 CLI 参考见 [design/10](design/10-api-protocol.md)。
+架构评审 / 引擎选型 / 协议 / 路线图见 `design/01`–`design/10`；部署见 [docs/operations.md](docs/operations.md)；**HTTP 接口协议**（端点 / 生命周期 / schema / 鉴权）见 [design/10](design/10-api-protocol.md)。
 
 ## 当前能力
 
@@ -135,14 +135,13 @@ curl http://127.0.0.1:8767/backtests/<job_id>/trades
 curl http://127.0.0.1:8767/backtests/<job_id>/rejections
 ```
 
-也可用命令行（封装了提交+轮询）：
+或用开闭环脚本一条命令跑完「建账户 → 买卖 → 结束 → 关闭 → 报告」（仅依赖 curl + python3）：
 
 ```bash
-.venv/bin/vortex-backtest backtest run --account demo --start 2026-01-02 --end 2026-01-05 --batch batch-main --wait
-.venv/bin/vortex-backtest report <job_id> --what daily
+scripts/backtest_roundtrip.sh --symbol 000001.SZ --start 2026-01-02 --end 2026-01-05
 ```
 
-协议与 CLI 完整参考见 [design/10-api-protocol.md](design/10-api-protocol.md)。
+HTTP 接口协议完整参考见 [design/10-api-protocol.md](design/10-api-protocol.md)。
 
 ## 多策略回测
 

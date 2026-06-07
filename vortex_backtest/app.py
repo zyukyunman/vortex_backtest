@@ -362,6 +362,24 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
             }
         return result
 
+    @app.get("/backtests/{job_id}/minutes")
+    def get_backtest_minutes(
+        job_id: str,
+        response: Response,
+        data_store: DataStore = Depends(get_store),
+        limit: int = Query(default=2000, ge=0),
+        offset: int = Query(default=0, ge=0),
+    ) -> list[dict]:
+        """逐分钟净值（组合）：timestamp/cash/market_value/total_value。
+
+        分页（limit/offset，limit=0 取到末尾），总数在响应头 `X-Total-Count`。
+        数据来自回测产物 `minute_equity.csv`（不进 SQLite，规避膨胀）。
+        """
+        summary = _completed_summary_or_404(data_store, job_id)
+        rows = _read_minute_equity(summary)
+        response.headers["X-Total-Count"] = str(len(rows))
+        return rows[offset:] if limit == 0 else rows[offset : offset + limit]
+
     @app.get("/backtests/{job_id}/metrics")
     def get_backtest_metrics(
         job_id: str,
@@ -555,17 +573,16 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         def dashboard_root() -> RedirectResponse:
             return RedirectResponse(url="/ui/")
 
-    # 文档站：/guide 渲染 design/ + docs/ 的 Markdown（设计与使用指南）；
-    # API 协议见 FastAPI 自带的 /docs(Swagger) 与 /redoc。
-    from . import docs_site
+    # 技术文档站：/guide 返回精修的静态 HTML（系统设计 / HTTP 接口协议 / 环境部署）。
+    # 不再走 Markdown 现场渲染；交互式 API 见 FastAPI 自带的 /docs(Swagger) 与 /redoc。
+    guide_html = web_dir / "guide.html"
 
     @app.get("/guide", include_in_schema=False)
     def guide_home() -> HTMLResponse:
-        return HTMLResponse(docs_site.render_site(None))
-
-    @app.get("/guide/{doc_path:path}", include_in_schema=False)
-    def guide_doc(doc_path: str) -> HTMLResponse:
-        return HTMLResponse(docs_site.render_site(doc_path))
+        try:
+            return HTMLResponse(guide_html.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail="guide not found") from exc
 
     return app
 
@@ -589,6 +606,30 @@ def _completed_summary_or_404(data_store: DataStore, job_id: str) -> dict:
     if job["status"] != "completed" or not job["summary"]:
         raise HTTPException(status_code=404, detail="completed summary not found")
     return job["summary"]
+
+
+def _read_minute_equity(summary: dict) -> list[dict]:
+    """读回测产物 minute_equity.csv → 逐分钟净值行（缺文件返回空）。"""
+    import csv
+
+    path = (summary.get("artifacts") or {}).get("minute_equity")
+    if not path or not Path(path).exists():
+        return []
+    rows: list[dict] = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            try:
+                rows.append(
+                    {
+                        "timestamp": r.get("timestamp"),
+                        "cash": float(r.get("cash") or 0.0),
+                        "market_value": float(r.get("market_value") or 0.0),
+                        "total_value": float(r.get("total_value") or 0.0),
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+    return rows
 
 
 app = create_app()

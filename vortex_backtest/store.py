@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS orders (
     quantity INTEGER NOT NULL,
     price_type TEXT,
     limit_price REAL,
+    exec_time TEXT,
     comment TEXT,
     created_at TEXT NOT NULL,
     UNIQUE(account_id, order_batch_id, request_id),
@@ -119,6 +120,8 @@ class DataStore:
 
     def _migrate_orders_table(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, "orders")
+        if "exec_time" not in columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN exec_time TEXT")
         unique_columns = self._unique_index_columns(conn, "orders")
         desired_unique = ("account_id", "order_batch_id", "request_id")
         if "order_batch_id" in columns and desired_unique in unique_columns:
@@ -138,6 +141,7 @@ class DataStore:
                 quantity INTEGER NOT NULL,
                 price_type TEXT,
                 limit_price REAL,
+                exec_time TEXT,
                 comment TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE(account_id, order_batch_id, request_id),
@@ -150,15 +154,16 @@ class DataStore:
             "COALESCE(order_batch_id, 'default')" if "order_batch_id" in old_columns else "'default'"
         )
         price_type_expr = "price_type" if "price_type" in old_columns else "NULL"
+        exec_time_expr = "exec_time" if "exec_time" in old_columns else "NULL"
         conn.execute(
             f"""
             INSERT INTO orders(
                 id, account_id, order_batch_id, request_id, trade_date, symbol,
-                side, quantity, price_type, limit_price, comment, created_at
+                side, quantity, price_type, limit_price, exec_time, comment, created_at
             )
             SELECT
                 id, account_id, {order_batch_expr}, request_id, trade_date, symbol,
-                side, quantity, {price_type_expr}, limit_price, comment, created_at
+                side, quantity, {price_type_expr}, limit_price, {exec_time_expr}, comment, created_at
             FROM orders_old
             """
         )
@@ -255,9 +260,9 @@ class DataStore:
                 """
                 INSERT INTO orders(
                     account_id, order_batch_id, request_id, trade_date, symbol, side, quantity,
-                    price_type, limit_price, comment, created_at
+                    price_type, limit_price, exec_time, comment, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_id,
@@ -269,6 +274,7 @@ class DataStore:
                     payload.quantity,
                     payload.price_type.value if payload.price_type else None,
                     payload.limit_price,
+                    payload.exec_time,
                     payload.comment,
                     created_at,
                 ),
@@ -537,6 +543,7 @@ def normalize_order(row: dict[str, Any]) -> dict[str, Any]:
         "quantity": row["quantity"],
         "price_type": row["price_type"],
         "limit_price": row["limit_price"],
+        "exec_time": row.get("exec_time"),
         "comment": row["comment"],
         "created_at": parse_dt(row["created_at"]),
     }

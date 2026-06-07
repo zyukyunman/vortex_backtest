@@ -30,36 +30,27 @@
 
 ---
 
-## 2. 生产形态：起 HTTP 服务 + 用 CLI
+## 2. 生产形态：起 HTTP 服务 + 走 HTTP
 
-服务是独立 HTTP 服务，回测**异步**（提交即返回 `job_id`，轮询到 `completed`）。CLI 是它的协议客户端。
+服务是独立 HTTP 服务，回测**异步**（提交即返回 `job_id`，轮询到 `completed`）。所有操作走 HTTP；命令行只用来起服务。
 
 ```bash
-# (1) 起服务（默认 127.0.0.1:8767）
-./.venv/bin/python -m vortex_backtest.cli serve --port 8767
-#   或安装后直接：vortex-backtest serve --port 8767
-
-# 另开一个终端：
-# (2) 建账户（默认引擎 replay）
-vortex-backtest account create --id demo --cash 1000000
-
-# (3) 下单：单条
-vortex-backtest order add --account demo --request-id buy-1 --date 2026-05-06 \
-    --symbol 600000.SH --side buy --qty 1000 --batch default
-#     批量（orders.json = 订单对象数组）：
-vortex-backtest order add --account demo --file orders.json
-
-# (4) 跑回测（--wait 轮询到完成）
-vortex-backtest backtest run --account demo --start 2026-05-06 --end 2026-06-05 \
-    --batch default --wait
-
-# (5) 取报告
-vortex-backtest report <job_id> --what summary     # summary | daily | trades | rejections
+# (1) 起服务（默认 127.0.0.1:8767；命令行只剩 serve）
+./.venv/bin/vortex-backtest serve --port 8767
+#   等价：./.venv/bin/python -m vortex_backtest.cli serve --port 8767
 ```
 
-纯 REST（等价端点，详见 usage-and-api §4）：
+另开一个终端，用**开闭环脚本**一条命令跑完「建账户 → 买卖 → 结束 → 关闭 → 报告」（仅依赖 curl + python3）：
+
+```bash
+scripts/backtest_roundtrip.sh --symbol 600000.SH --start 2026-05-06 --end 2026-06-05
+#   远端 + 鉴权：scripts/backtest_roundtrip.sh --base-url http://10.0.0.5:8767 --token "$TOK"
+#   全部选项：  scripts/backtest_roundtrip.sh --help
+```
+
+或自己拼 HTTP（等价端点，详见 [usage-and-api.md](usage-and-api.md) §3–4）：
 `POST /accounts` · `POST /accounts/{id}/orders` · `POST /backtests`（→202+job_id）·
-`GET /backtests/{job_id}`（轮询状态）· `GET /backtests/{job_id}/summary|daily|trades|rejections`。
+`GET /backtests/{job_id}`（轮询到 `completed`）· `GET /backtests/{job_id}/summary|daily|minutes|trades|rejections`。
 
 ---
 
@@ -78,7 +69,8 @@ vortex-backtest report <job_id> --what summary     # summary | daily | trades | 
   "symbol": "600000.SH",
   "side": 1,                 // 1=买 2=卖
   "quantity": 1000,
-  "price_type": "close",     // open=按当日首分钟 / close=按当日末分钟（默认 close）
+  "price_type": "close",     // 日级：open=当日首分钟 / close=当日末分钟（默认 close）
+  "exec_time": "10:30",       // 分钟级：盘中分钟 HH:MM[:SS]，在 at-or-after 该分钟成交（填了则优先于 price_type）
   "limit_price": 10.50        // 可选；限价，挂单合法性对 raw 价判定
 }
 ```
@@ -94,20 +86,21 @@ vortex-backtest report <job_id> --what summary     # summary | daily | trades | 
 ]
 ```
 
-`backtest run --strategies-file strategies.json`。
+把上面的数组放进 `POST /backtests` 请求体的 `strategies` 字段即可。
 
 ---
 
 ## 4. 输出与字段
 
 回测产出（API 返回 + 落盘 artifacts：`account_summary.json / trades.csv / rejections.csv /
-positions.csv / daily_equity.csv`）：
+positions.csv / daily_equity.csv / minute_equity.csv`）：
 
 - **成交 trades**：`price/amount/commission/stamp_tax/transfer_fee/cash_after`，外加
   `realized_pnl`（卖出已实现盈亏）、`requested_quantity`（原始下单量，与 `quantity` 实际成交量不等即**部分成交**）。
 - **拒单 rejections**：`reason`（英文码，见 §6）。
 - **持仓 positions**：`quantity/available_quantity（可卖，T+1）/cost_basis/last_price/market_value/unrealized_pnl`。
 - **日净值 daily**：每个交易日 `cash/market_value/total_value/daily_pnl/total_return/drawdown`（按交易日历补齐，停牌日 forward-fill）。
+- **逐分钟净值**：`GET /backtests/{id}/minutes`（分页 limit/offset，总数在 `X-Total-Count`）+ 产物 `minute_equity.csv`（不进 summary/SQLite，规避膨胀）。
 - **汇总 summary**：`cash/market_value/total_value/total_return/max_drawdown/realized_pnl` + 各策略明细。
 
 ---
@@ -128,7 +121,7 @@ python scripts/reconcile_statement.py \
 
 ## 6. A 股口径（撮合规则）
 
-- **统一分钟数据、前复权 qfq**；订单为**日级**，按 `price_type` 在当日首/末分钟成交（**非**日内逐 tick 触价）。
+- **统一分钟数据、前复权 qfq**；订单可**日级**（`price_type` open/close → 当日首/末分钟）或**分钟级**（`exec_time` 指定盘中分钟 → at-or-after 该分钟成交）。仍**非**日内逐 tick 挂单等待（限价在成交分钟判定）。
 - **T+1**：当日买入次日才可卖。
 - **涨跌停**：以数据为准，涨停不可买 / 跌停不可卖。
 - **手数**：主板 100、科创板 ≥200、北交所规则；不足整手向下取整。

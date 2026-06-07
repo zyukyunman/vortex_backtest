@@ -1,6 +1,6 @@
 # vortex_backtest 使用与接口指南
 
-> 面向「怎么用」的上手文档：启动服务 → 建账户/下单 → 跑回测 → 看结果（命令行 / REST / 看板）。
+> 面向「怎么用」的上手文档：启动服务 → 建账户/下单 → 跑回测 → 看结果（开闭环脚本 / REST / 看板）。
 > 本文命令均已在本机 `.venv`（Python 3.13）实测通过；示例数据用真实分钟行情 **2026-05-06 ~ 2026-06-05（23 个交易日）**。
 
 ---
@@ -45,7 +45,7 @@ export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 ## 2. 核心概念
 
 - **账户 account**：一笔初始资金 + 一个引擎（自研 A 股分钟撮合，枚举名 `replay`；本机直接读 `stk_mins` 原始分钟，无需 Docker）。
-- **订单 order**：挂在某个 **批次 `order_batch_id`** 下，含交易日、代码、方向（买=1/卖=2）、数量、可选限价。
+- **订单 order**：挂在某个 **批次 `order_batch_id`** 下，含交易日、代码、方向（买=1/卖=2）、数量、可选限价；可选 `exec_time`（盘中分钟 `HH:MM`）→ **分钟级**在该分钟（at-or-after）成交，不填则按 `price_type` 日级（open/close）成交。
 - **策略 strategy**：`strategy_id` + 它对应的 **订单批次**（`params.order_batch_id`）。一次回测可含多个策略，每个策略是**独立子账户**（各自一份初始资金）。
 - **作业 job**：一次回测。异步——POST 立即返回 `202 + job_id`，后台 worker 跑完置 `completed`。
 - **报告**：日级净值、成交、拒单、持仓 + 汇总指标，落在 `.vortex_backtest/reports/<job_id>/`。
@@ -54,43 +54,49 @@ export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 
 ---
 
-## 3. 命令速查（CLI）
+## 3. 怎么调用：开闭环脚本 + HTTP
 
-CLI 既能起服务，也能当 HTTP 客户端。客户端默认连 `http://127.0.0.1:8767`（可用 `--base-url` 或环境变量 `VORTEX_BACKTEST_BASE_URL` 改）。
+回测的全部操作都走 **HTTP**，**不再有命令行协议客户端**（命令行只剩 `serve` 起服务）。两种调用方式：
+
+**(A) 开闭环脚本（最省事）** —— 一条命令跑完「建账户 → 买卖 → 结束 → 关闭 → 报告」，仅依赖 `curl + python3`：
 
 ```bash
-PY="./.venv/bin/python -m vortex_backtest.cli"
-
-# —— 账户 ——
-$PY account create --id demo --cash 1000000 --name "演示账户"
-$PY account list
-$PY account get --id demo
-
-# —— 下单 ——
-# 单条
-$PY order add --account demo --batch batch-main --request-id m1 \
-    --date 2026-05-06 --symbol 600000.SH --side buy --qty 1000
-# 批量（JSON 数组文件，见 §3.1）
-$PY order add --account demo --file /tmp/vbt_orders.json
-
-# —— 回测（--wait 轮询到完成）——
-# 单策略（按批次回放）
-$PY backtest run --account demo --batch batch-main \
-    --start 2026-05-06 --end 2026-06-05 --wait
-# 多策略（策略文件，见 §3.2）
-$PY backtest run --account demo \
-    --start 2026-05-06 --end 2026-06-05 \
-    --strategies-file /tmp/vbt_strategies.json --wait --timeout 300
-
-# —— 查询 ——
-$PY backtest status <job_id>
-$PY report <job_id> --what summary      # summary | daily | trades | rejections
-$PY symbol 688169.SH                     # 看代码归属板块 + 手数/涨跌停规则
+# 服务起好后（见 §0）
+scripts/backtest_roundtrip.sh                        # 默认标的/区间（600000.SH，05-06~06-05）
+scripts/backtest_roundtrip.sh --symbol 000001.SZ --buy-date 2026-05-06 --sell-date 2026-05-20
+scripts/backtest_roundtrip.sh --base-url http://10.0.0.5:8767 --token "$TOK"   # 远端 + 鉴权
+scripts/backtest_roundtrip.sh --help                 # 全部选项
 ```
 
-### 3.1 订单批量文件 `orders.json`
+**(B) 纯 curl（看清每一步协议）**：
 
-`side` 在 CLI 文件里可写 `buy`/`sell`（直连 REST 时必须用数字 `1`/`2`）。
+```bash
+B=http://127.0.0.1:8767
+
+# 建账户
+curl -s -XPOST $B/accounts -H 'Content-Type: application/json' \
+  -d '{"account_id":"demo","initial_cash":1000000,"name":"演示账户"}'
+
+# 下单（side：1=买 2=卖；批量就对每条各调一次）
+curl -s -XPOST $B/accounts/demo/orders -H 'Content-Type: application/json' \
+  -d '{"order_batch_id":"batch-main","request_id":"m1","trade_date":"2026-05-06","symbol":"600000.SH","side":1,"quantity":1000}'
+
+# 提交回测（结束）→ 拿 job_id
+JOB=$(curl -s -XPOST $B/backtests -H 'Content-Type: application/json' \
+  -d '{"account_id":"demo","order_batch_id":"batch-main","start_date":"2026-05-06","end_date":"2026-06-05"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+
+# 轮询到终态（关闭）
+until curl -s $B/backtests/$JOB | python3 -c 'import sys,json;s=json.load(sys.stdin)["status"];print(s);exit(0 if s in {"completed","failed","cancelled","interrupted"} else 1)'; do sleep 1; done
+
+# 取报告
+curl -s $B/backtests/$JOB/summary       # 还有 /daily /trades /rejections
+curl -s "$B/symbols/688169.SH"           # 代码归属板块 + 手数/涨跌停规则
+```
+
+### 3.1 订单 JSON（HTTP body）
+
+直连 REST 时 `side` 必须用数字 `1`（买）/`2`（卖）。批量下单 = 对清单里每条各 `POST /accounts/{id}/orders` 一次（幂等键 `account+batch+request_id` 保证可安全重试）。
 
 ```json
 [
@@ -101,11 +107,11 @@ $PY symbol 688169.SH                     # 看代码归属板块 + 手数/涨跌
 ]
 ```
 
-字段：`order_batch_id`、`request_id`（同账户内唯一）、`trade_date`（YYYY-MM-DD）、`symbol`、`side`、`quantity`(>0)、可选 `limit_price`、`comment`。
+字段：`order_batch_id`、`request_id`（同账户内唯一）、`trade_date`（YYYY-MM-DD）、`symbol`、`side`、`quantity`(>0)、可选 `price_type`（open/close，日级）、`exec_time`（`HH:MM`，**分钟级**：在当日 at-or-after 该分钟成交；填了则优先于 price_type）、`limit_price`、`comment`。
 
-### 3.2 策略文件 `strategies.json`
+### 3.2 策略列表（`POST /backtests` 的 `strategies` 字段）
 
-每个策略用 `params.order_batch_id` 绑定它回放的订单批次；`symbols` 不填则自动取该批次出现过的代码。
+多策略时把下面的数组放进 `POST /backtests` 请求体的 `strategies`。每个策略用 `params.order_batch_id` 绑定它回放的订单批次；`symbols` 不填则自动取该批次出现过的代码。
 
 ```json
 [
@@ -160,6 +166,7 @@ $PY symbol 688169.SH                     # 看代码归属板块 + 手数/涨跌
 | GET | `/backtests/{job_id}` | 作业状态 / 进度 |
 | GET | `/backtests/{job_id}/summary` | 完整汇总（现金/市值/持仓/成交/拒单/各策略） |
 | GET | `/backtests/{job_id}/daily` · `/daily/{trade_date}` | 日级净值序列 / 某日快照 |
+| GET | `/backtests/{job_id}/minutes?limit=&offset=` | 逐分钟净值（组合；服务端分页，响应头 `X-Total-Count`） |
 | GET | `/backtests/{job_id}/trades?strategy_id=&limit=&offset=` | 成交（服务端分页，响应头 `X-Total-Count`） |
 | GET | `/backtests/{job_id}/rejections?reason=&strategy_id=&limit=&offset=` | 拒单（同上） |
 | GET | `/backtests/{job_id}/rejections/summary` | 拒单按原因计数 |
@@ -232,7 +239,7 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | `VORTEX_INDEX_DATA_DIR` | 指数基准目录 | `$VORTEX_DATA_WORKSPACE/data/index_daily` |
 | `VORTEX_BACKTEST_HOST` / `PORT` | 服务监听地址 | `127.0.0.1` / `8767` |
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权（非回环必配） | 任意密钥 |
-| `VORTEX_BACKTEST_BASE_URL` | CLI 客户端默认连的服务地址 | `http://127.0.0.1:8767` |
+| `BASE_URL` | 开闭环脚本 `backtest_roundtrip.sh` 默认连的服务地址 | `http://127.0.0.1:8767` |
 | `VORTEX_BACKTEST_STATE_DIR` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
 
 ---

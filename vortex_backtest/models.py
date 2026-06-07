@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -84,6 +85,9 @@ class OrderCreate(BaseModel):
     quantity: int = Field(..., gt=0)
     price_type: PriceType | None = None
     limit_price: float | None = Field(default=None, gt=0)
+    # 盘中执行分钟（HH:MM[:SS]）。填了 → 分钟级：在当日 at-or-after 该时刻的首个分钟 bar 成交；
+    # 不填 → 日级：按 price_type 在当日首/末分钟成交（向后兼容）。
+    exec_time: str | None = Field(default=None)
     comment: str | None = Field(default=None, max_length=512)
 
     @field_validator("symbol")
@@ -97,6 +101,16 @@ class OrderCreate(BaseModel):
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("side must be numeric enum: 1=BUY, 2=SELL")
         return value
+
+    @field_validator("exec_time")
+    @classmethod
+    def exec_time_format(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        v = str(value).strip()
+        if not re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", v):
+            raise ValueError("exec_time must be HH:MM or HH:MM:SS")
+        return v
 
 
 class OrderOut(OrderCreate):

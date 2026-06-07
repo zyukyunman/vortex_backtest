@@ -59,15 +59,17 @@ def main() -> int:
 
     # ── 2. 提交外部订单（同一 order_batch_id 下；side 1=买 2=卖）──────────────
     orders = [
+        # 分钟级：BUY_DATE 当日 10:30 买入（exec_time=盘中分钟；不填则按 price_type 日级 open/close 成交）
         {"request_id": "buy-1", "order_batch_id": "default", "trade_date": BUY_DATE,
-         "symbol": SYMBOL, "side": 1, "quantity": 1000},                       # 按当日收盘买入 1000 股
+         "symbol": SYMBOL, "side": 1, "quantity": 1000, "exec_time": "10:30"},
+        # 日级：SELL_DATE 当日收盘卖出（T+1 满足）
         {"request_id": "sell-1", "order_batch_id": "default", "trade_date": SELL_DATE,
-         "symbol": SYMBOL, "side": 2, "quantity": 1000},                       # 数日后卖出（T+1 满足）
+         "symbol": SYMBOL, "side": 2, "quantity": 1000, "price_type": "close"},
     ]
     for o in orders:
         rr = client.post("/accounts/demo/orders", json=o)
         assert rr.status_code == 201, rr.text
-    print(f"\n2) 已提交 {len(orders)} 笔订单（{SYMBOL}：{BUY_DATE} 买 / {SELL_DATE} 卖）")
+    print(f"\n2) 已提交 {len(orders)} 笔订单（{SYMBOL}：{BUY_DATE} 10:30 买[分钟级] / {SELL_DATE} 收盘卖）")
 
     # ── 3. 提交回测（异步：返回 202 + job_id）然后同步跑完 ──────────────────
     r = client.post("/backtests", json={
@@ -88,9 +90,12 @@ def main() -> int:
     _p("4c) 拒单（reason 为英文码；看板展示层中文化）", summary["rejections"])
     daily = summary["daily"]
     _p(f"4d) 日净值（共 {len(daily)} 个交易日，仅示首尾）", [daily[0], daily[-1]] if daily else [])
+    # 4e) 逐分钟净值（分钟级升级新增；来自 minute_equity.csv，分页 limit/offset，总数在 X-Total-Count 头）
+    mresp = client.get(f"/backtests/{job_id}/minutes", params={"limit": 3})
+    _p(f"4e) 逐分钟净值（共 {mresp.headers.get('x-total-count')} 分钟，仅示前 3）", mresp.json())
 
     print(f"\n✅ 完成。落盘报告在：{state_dir}/reports/{job_id}/")
-    print("   - account_summary.json / trades.csv / rejections.csv / positions.csv / daily_equity.csv")
+    print("   - account_summary.json / trades.csv / rejections.csv / positions.csv / daily_equity.csv / minute_equity.csv")
     print("   提示：与券商对账见 scripts/reconcile_statement.py（docs/quickstart.md 第 5 节）。")
     return 0
 
