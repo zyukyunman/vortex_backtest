@@ -1,4 +1,6 @@
-# Backtrader + Tushare 分钟级 A 股回测框架设计
+# 自研（replay）分钟级 A 股回测引擎设计（历史快照）
+
+> 注：本文为早期设计快照。引擎实为**自研纯 Python 分钟撮合**，早期误称 "Backtrader" 但从未真正使用该框架；已于 2026-06-07 正名为 `replay`、并删除 backtrader 死依赖（见 design/14、design/15）。下文 "Backtrader" 字样按 `replay` 引擎理解。
 
 ## 目标
 
@@ -38,7 +40,7 @@ qfq 价格生成规则：同一 symbol 在回测区间内取最后一个 `adj_fa
 
 ## HTTP 接口
 
-`POST /accounts` 默认 `engine=backtrader`。历史 sqlite 中的 `rqalpha` 和 `ashare_replay` 账户在初始化时迁移为 `backtrader`。
+`POST /accounts` 默认 `engine=replay`。历史 sqlite 中的 `backtrader`/`qlib`/`rqalpha`/`ashare_replay` 账户在初始化时迁移为 `replay`。
 
 `POST /backtests` 第一阶段只接受：
 

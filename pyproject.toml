@@ -5,7 +5,6 @@ description = "Independent HTTP backtest/account replay service for Vortex."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "backtrader>=1.9.78",
     "fastapi>=0.128.0",
     "pandas>=2.2",
     "pyarrow>=16",
@@ -20,9 +19,6 @@ dev = [
 ]
 sample = [
     "httpx>=0.27",
-]
-spike = [
-    "pyqlib>=0.9",
 ]
 crosscheck = [
     # 仅用于单测对拍指标口径（empyrical），非运行时依赖；缺失时相关测试自动跳过

@@ -44,7 +44,7 @@ export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 
 ## 2. 核心概念
 
-- **账户 account**：一笔初始资金 + 一个引擎。默认引擎 `backtrader`（本机直接读 `stk_mins` 原始分钟，无需 Docker）；另有 `qlib`（仅 amd64 镜像内，需先用 vortex_data 导出 qlib 数据）。
+- **账户 account**：一笔初始资金 + 一个引擎（自研 A 股分钟撮合，枚举名 `replay`；本机直接读 `stk_mins` 原始分钟，无需 Docker）。
 - **订单 order**：挂在某个 **批次 `order_batch_id`** 下，含交易日、代码、方向（买=1/卖=2）、数量、可选限价。
 - **策略 strategy**：`strategy_id` + 它对应的 **订单批次**（`params.order_batch_id`）。一次回测可含多个策略，每个策略是**独立子账户**（各自一份初始资金）。
 - **作业 job**：一次回测。异步——POST 立即返回 `202 + job_id`，后台 worker 跑完置 `completed`。
@@ -222,8 +222,6 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | 写接口 403 | 绑了非回环 host 且没配 `VORTEX_BACKTEST_TOKEN`；本机回环默认放行 |
 | 基准为空 | 没设 `VORTEX_INDEX_DATA_DIR`（指向 `.../workspace/data/index_daily`） |
 | 看板图表不显示 | 已本地内置 Chart.js（`web/static/vendor/`），缺失会退到内联 SVG 静态预览 |
-| `qlib` 引擎跑不动 | 仅 amd64 镜像内可用，需先 `vortex-data export qlib --freq 1min` 导出数据 |
-
 ---
 
 ## 附：环境变量一览
@@ -236,4 +234,21 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权（非回环必配） | 任意密钥 |
 | `VORTEX_BACKTEST_BASE_URL` | CLI 客户端默认连的服务地址 | `http://127.0.0.1:8765` |
 | `VORTEX_BACKTEST_STATE_DIR` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
-| `VORTEX_QLIB_PROVIDER_URI` | qlib 引擎数据目录（镜像内） | `/qlib` |
+
+---
+
+## 附：与券商对账单对照（容差）
+
+回测走 **qfq 前复权、不建模现金分红**，与券商真实账本按**容差**对照即可（口径见 design/15）。
+
+1. 跑回测拿到产物 `account_summary.json`（作业完成后在 `report_dir`，或 `GET /backtests/{job_id}/summary`）。
+2. 备好券商对账单 CSV（必需列 `date,symbol,side,quantity,price`；可含 `amount/commission/stamp_tax/transfer_fee/request_id`，列名中英文别名自动识别）。
+3. 对照：
+
+   ```bash
+   python scripts/reconcile_statement.py \
+       --summary account_summary.json --statement 对账单.csv \
+       --events-dir "$VORTEX_DATA_WORKSPACE/data/events" --tolerance 0.005
+   ```
+
+   按 `(date, symbol, side)` 聚合比较 数量 / 成交额 / 费用，超差或未匹配列入"需排查"（退出码 1，便于 CI 卡口）。窗口内**除权**的标的（读 `events.ex_date`）标注为**预期 qfq 分红差**，与真 bug 区分。成交记录另含 `realized_pnl`（已实现盈亏）与 `requested_quantity`（原始下单量，便于识别量能上限导致的部分成交）。

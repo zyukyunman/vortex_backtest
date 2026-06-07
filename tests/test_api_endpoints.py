@@ -37,7 +37,7 @@ def test_account_crud_and_errors(tmp_path):
     client = _client(tmp_path)
     created = client.post("/accounts", json={"account_id": "a1", "initial_cash": 100000, "name": "n"})
     assert created.status_code == 201
-    assert created.json()["engine"] == "backtrader"
+    assert created.json()["engine"] == "replay"
 
     assert client.get("/accounts/a1").status_code == 200
     assert client.get("/accounts/missing").status_code == 404

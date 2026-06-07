@@ -113,8 +113,8 @@ class DataStore:
 
     def _migrate_account_engines(self, conn: sqlite3.Connection) -> None:
         conn.execute(
-            "UPDATE accounts SET engine = ? WHERE engine IN (?, ?)",
-            ("backtrader", "rqalpha", "ashare_replay"),
+            "UPDATE accounts SET engine = ? WHERE engine IN (?, ?, ?, ?)",
+            ("replay", "backtrader", "rqalpha", "ashare_replay", "qlib"),
         )
 
     def _migrate_orders_table(self, conn: sqlite3.Connection) -> None:

@@ -1,5 +1,5 @@
 # vortex_backtest 运行镜像（与 vortex_data 共享同一 base：python:3.12-slim）
-# 说明：当前引擎仍是自研撮合（不含 qlib）。引擎迁移到 Qlib 后，把下面的安装改为 `.[qlib]` 即可。
+# 说明：引擎为自研 A 股分钟撮合，本机直读 parquet（不依赖 qlib）。
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

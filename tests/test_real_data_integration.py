@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from vortex_backtest.backtrader_adapter import BacktraderMinuteReplayEngine
+from vortex_backtest.replay_engine import MinuteReplayEngine
 from vortex_backtest.data_adapter import TushareMinuteDataLoader
 
 # 缺依赖（如 pyarrow）则整文件跳过
@@ -144,11 +144,11 @@ def test_real_engine_end_to_end_invariants(discovered, tmp_path):
     symbol = discovered["symbol"]
     days = discovered["days"]
     day1, day2 = _iso(days[0]), _iso(days[1])
-    engine = BacktraderMinuteReplayEngine(data_loader=TushareMinuteDataLoader(WORKSPACE))
+    engine = MinuteReplayEngine(data_loader=TushareMinuteDataLoader(WORKSPACE))
     try:
         summary = engine.run(
             job_id="rt-job",
-            account={"account_id": "rt", "initial_cash": 1_000_000.0, "engine": "backtrader"},
+            account={"account_id": "rt", "initial_cash": 1_000_000.0, "engine": "replay"},
             orders=_orders(symbol, day1, day2),
             report_dir=tmp_path / "report",
             start_date=date(*_ymd(days[0])),

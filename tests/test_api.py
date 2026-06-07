@@ -8,7 +8,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from vortex_backtest.app import create_app
-from vortex_backtest.backtrader_adapter import BacktraderMinuteReplayEngine
+from vortex_backtest.replay_engine import MinuteReplayEngine
 from vortex_backtest.data_adapter import TushareMinuteDataLoader
 from vortex_backtest.market_rules import AShareRuleEngine
 from vortex_backtest.models import Side
@@ -130,29 +130,28 @@ def test_account_defaults_to_backtrader_engine(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 201
-    assert response.json()["engine"] == "backtrader"
+    assert response.json()["engine"] == "replay"
 
 
-def test_historical_rqalpha_and_ashare_accounts_migrate_to_backtrader(tmp_path: Path) -> None:
+def test_historical_accounts_migrate_to_replay(tmp_path: Path) -> None:
     store = DataStore(tmp_path)
     with store.connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO accounts(account_id, name, initial_cash, engine, created_at)
-            VALUES ('old-rqalpha', NULL, 10000, 'rqalpha', '2026-01-01T00:00:00+00:00')
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO accounts(account_id, name, initial_cash, engine, created_at)
-            VALUES ('old-ashare', NULL, 10000, 'ashare_replay', '2026-01-01T00:00:00+00:00')
-            """
-        )
+        for acct, legacy in (
+            ("old-rqalpha", "rqalpha"),
+            ("old-ashare", "ashare_replay"),
+            ("old-backtrader", "backtrader"),
+            ("old-qlib", "qlib"),
+        ):
+            conn.execute(
+                "INSERT INTO accounts(account_id, name, initial_cash, engine, created_at)"
+                " VALUES (?, NULL, 10000, ?, '2026-01-01T00:00:00+00:00')",
+                (acct, legacy),
+            )
 
     migrated = DataStore(tmp_path)
 
-    assert migrated.get_account("old-rqalpha")["engine"] == "backtrader"
-    assert migrated.get_account("old-ashare")["engine"] == "backtrader"
+    for acct in ("old-rqalpha", "old-ashare", "old-backtrader", "old-qlib"):
+        assert migrated.get_account(acct)["engine"] == "replay"
 
 
 def test_backtest_requires_minute_frequency_and_qfq(tmp_path: Path, monkeypatch) -> None:

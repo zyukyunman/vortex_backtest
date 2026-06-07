@@ -35,10 +35,9 @@ def _drain_summary(client: TestClient, payload: dict[str, Any]) -> dict[str, Any
 #   validate_order 的现金充足性按 fill_price(无滑点) 判定，
 #   但 execute_order 按 fill_price*(1+slippage) 扣款 → 临界单会把现金打到负数。
 #   位置：market_rules.AShareRuleEngine.validate_order(BUY 分支) /
-#         backtrader_adapter.execute_order；qlib_engine 同源。
+#         replay_engine.execute_order。
 # ============================================================================
 
-@pytest.mark.xfail(strict=True, reason="bug#1 滑点未计入买入现金校验，临界单导致现金为负")
 def test_slippage_must_not_drive_cash_negative(tmp_path, monkeypatch, workspace_builder):
     ws = workspace_builder.day(
         "2026-01-02", "000001.SZ", open=10.0, close=10.0, volume=1_000_000, up_limit=99.0, down_limit=1.0
@@ -64,10 +63,9 @@ def test_slippage_must_not_drive_cash_negative(tmp_path, monkeypatch, workspace_
 #   某策略标的停牌/当日无数据时该日无快照。aggregate_daily 按日期分组后只把
 #   “当日有快照的策略”相加 → 缺席策略的现金/市值被漏掉 → 组合净值虚降、
 #   daily_pnl/最大回撤被严重扭曲。（qlib 引擎按交易日并集补齐，不受影响 → 两引擎不一致。）
-#   位置：backtrader_adapter.aggregate_daily。
+#   位置：replay_engine.aggregate_daily。
 # ============================================================================
 
-@pytest.mark.xfail(strict=True, reason="bug#2 aggregate_daily 在日期缺口处漏算缺席策略，组合净值失真")
 def test_multi_strategy_daily_aggregation_handles_missing_dates(tmp_path, monkeypatch, workspace_builder):
     # A 标的两天都有 bar；B 标的仅 01-05 有 bar（01-02 视作停牌/无数据）。两策略各持 1 万现金、都不下单。
     ws = (

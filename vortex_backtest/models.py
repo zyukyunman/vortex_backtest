@@ -31,8 +31,8 @@ class PriceAdjustment(StrEnum):
 
 
 class EngineName(StrEnum):
-    BACKTRADER = "backtrader"
-    QLIB = "qlib"
+    # 自研 A 股分钟撮合引擎（前身误名 backtrader，已于 2026-06-07 正名；见 design/15）
+    REPLAY = "replay"
 
 
 class Frequency(StrEnum):
@@ -55,8 +55,16 @@ class StrategyCreate(BaseModel):
 class AccountCreate(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=64)
     initial_cash: float = Field(..., gt=0)
-    engine: EngineName = EngineName.BACKTRADER
+    engine: EngineName = EngineName.REPLAY
     name: str | None = Field(default=None, max_length=128)
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _coerce_legacy_engine(cls, value: Any) -> Any:
+        # 兼容历史/旧客户端的引擎值（backtrader/qlib/rqalpha/ashare_replay）→ 统一 replay
+        if isinstance(value, str) and value in {"backtrader", "qlib", "rqalpha", "ashare_replay"}:
+            return "replay"
+        return value
 
 
 class AccountOut(BaseModel):
@@ -165,12 +173,14 @@ class TradeOut(BaseModel):
     symbol: str
     side: Side
     side_name: str
+    requested_quantity: int | None = None
     quantity: int
     price: float
     amount: float
     commission: float
     stamp_tax: float
     transfer_fee: float
+    realized_pnl: float = 0.0
     cash_after: float
 
 
@@ -221,6 +231,7 @@ class StrategySummaryOut(BaseModel):
     total_value: float
     total_return: float
     max_drawdown: float
+    realized_pnl: float = 0.0
     positions: list[PositionOut]
     trades: list[TradeOut]
     rejections: list[RejectionOut]
@@ -241,6 +252,7 @@ class AccountSummaryOut(BaseModel):
     total_value: float
     total_return: float
     max_drawdown: float
+    realized_pnl: float = 0.0
     positions: list[PositionOut]
     trades: list[TradeOut]
     rejections: list[RejectionOut]
