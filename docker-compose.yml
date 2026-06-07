@@ -9,8 +9,8 @@ services:
         BASE_IMAGE: ${BASE_IMAGE:-vortex-base:latest}
     container_name: vortex-backtest
     environment:
-      VORTEX_DATA_WORKSPACE: /workspace
-      VORTEX_BACKTEST_STATE_DIR: /state
+      VORTEX_WORKSPACE: /workspace            # 标准名，容器内固定（ADR-002）
+      VORTEX_STATE: /state                    # 标准名，容器内固定（ADR-002）
       VORTEX_BACKTEST_HOST: ${VORTEX_BACKTEST_HOST:-0.0.0.0}
       VORTEX_BACKTEST_PORT: ${VORTEX_BACKTEST_PORT:-8767}
       TZ: ${TZ:-Asia/Shanghai}
@@ -22,8 +22,8 @@ services:
       - "${VORTEX_BACKTEST_BIND_ADDR:-127.0.0.1}:${VORTEX_BACKTEST_PUBLIC_PORT:-8767}:${VORTEX_BACKTEST_PORT:-8767}"
     volumes:
       # 数据来自 vortex_data 的导出，只读挂载；整合部署时换成共享 named volume
-      - ${VORTEX_BACKTEST_WORKSPACE:-../vortex_data/workspace}:/workspace:ro
-      - ${VORTEX_BACKTEST_STATE:-./state}:/state
+      - ${VORTEX_WORKSPACE_MOUNT:-../vortex_data/workspace}:/workspace:ro
+      - ${VORTEX_STATE_MOUNT:-./state}:/state
     restart: unless-stopped
     healthcheck:
       test:

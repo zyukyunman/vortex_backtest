@@ -34,7 +34,7 @@ class MinuteReplayEngine:
         data_loader: TushareMinuteDataLoader | None = None,
         rules: AShareRuleEngine | None = None,
     ):
-        workspace = Path(os.getenv("VORTEX_DATA_WORKSPACE", str(DEFAULT_WORKSPACE)))
+        workspace = Path(os.getenv("VORTEX_WORKSPACE", str(DEFAULT_WORKSPACE)))
         self.data_loader = data_loader or TushareMinuteDataLoader(workspace)
         self.rules = rules or AShareRuleEngine()
 

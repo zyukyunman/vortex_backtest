@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -10,7 +11,7 @@ import pandas as pd
 from .symbols import market_board, normalize_symbol
 
 
-DEFAULT_WORKSPACE = Path("/Users/zyukyunman/Documents/vortex_workspace")
+DEFAULT_WORKSPACE = Path(os.environ.get("VORTEX_WORKSPACE", "/workspace"))
 
 
 @dataclass(frozen=True)

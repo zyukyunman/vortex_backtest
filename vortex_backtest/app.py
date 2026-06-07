@@ -34,7 +34,7 @@ from .worker import JobWorker
 
 
 def default_state_dir() -> Path:
-    env_value = os.getenv("VORTEX_BACKTEST_STATE_DIR")
+    env_value = os.getenv("VORTEX_STATE") or os.getenv("VORTEX_BACKTEST_STATE_DIR")
     if env_value:
         return Path(env_value).expanduser().resolve()
     return (Path.cwd() / ".vortex_backtest").resolve()

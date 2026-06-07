@@ -51,6 +51,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--surface);padding:.
 .prose h2{font-size:23px;font-weight:650;margin:46px 0 14px;padding-top:14px;border-top:.5px solid var(--border);scroll-margin-top:70px}
 .prose h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:10px;font-size:.78em;font-weight:600}
 .prose h3{font-size:17.5px;font-weight:650;margin:30px 0 10px;scroll-margin-top:70px}
+.prose h4{font-size:15px;font-weight:650;margin:26px 0 8px;color:var(--accent)}
 .prose p{margin:12px 0}
 .prose ul,.prose ol{margin:12px 0;padding-left:22px}
 .prose li{margin:5px 0}
@@ -260,7 +261,7 @@ td code,th code{white-space:nowrap}
       <section id="design-rules" class="section">
         <h3>1.6 A 股撮合口径</h3>
         <ul>
-          <li><strong>成交方式</strong>:订单为<strong>日级</strong>,按 <code>price_type</code> 在当日首/末分钟成交(非日内逐 tick 触价)。</li>
+          <li><strong>成交方式</strong>:订单可<strong>日级</strong>(<code>price_type</code> open/close → 当日首/末分钟)或<strong>分钟级</strong>(<code>exec_time</code> 指定盘中分钟 <code>HH:MM</code> → 当日 <em>at-or-after</em> 该分钟成交,优先于 <code>price_type</code>);仍非日内逐 tick 挂单等待(限价在成交分钟判定)。</li>
           <li><strong>T+1</strong>:当日买入次日才可卖,违者拒为 <code>t_plus_1_not_sellable</code>。</li>
           <li><strong>涨跌停</strong>:以 <code>stk_limit</code> 为准,涨停拦买、跌停拦卖。</li>
           <li><strong>分板手数</strong>:主板 100 股/手,科创 ≥200,北交所另算;不足整手向下取整或拒单。</li>
@@ -273,7 +274,7 @@ td code,th code{white-space:nowrap}
       <section id="design-report" class="section">
         <h3>1.7 多策略与报告口径</h3>
         <p><strong>多策略</strong>:一次回测可含多个策略,每个策略是<strong>独立子账户</strong>(各自初始资金 / 持仓 / 净值),用 <code>params.order_batch_id</code> 绑定各自订单批次,最终汇总聚合展示。</p>
-        <p><strong>报告口径 = 日级</strong>:每日净值 + 当日成交/拒单/持仓 + 摘要指标(收益、最大回撤、已实现盈亏等)。已移除分钟级输出(无 <code>/minutes</code>)。成交记录含 <code>realized_pnl</code>(已实现盈亏)与 <code>requested_quantity</code>(原始下单量,识别部分成交)。</p>
+        <p><strong>报告口径 = 日级为主 + 可选逐分钟</strong>。日级:每日净值 + 当日成交/拒单/持仓 + 摘要指标(收益、最大回撤、已实现盈亏等)。逐分钟:组合净值(<code>timestamp/cash/market_value/total_value</code>)经 <code>GET /backtests/{job_id}/minutes</code> 分页取,落盘产物 <code>minute_equity.csv</code>(不进 summary/SQLite,规避膨胀)。成交记录含 <code>realized_pnl</code>(已实现盈亏)与 <code>requested_quantity</code>(原始下单量,识别部分成交)。</p>
       </section>
       <!-- END:design -->
 
@@ -349,6 +350,7 @@ curl -s $B/backtests/$JOB/summary</code></pre></div>
             <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}</code></td><td>作业状态 + 进度 <code>progress</code></td></tr>
             <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/summary</code></td><td>账户级汇总 + 各策略 + 日级 <code>daily</code></td></tr>
             <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/daily</code> · <code>/daily/{trade_date}</code></td><td>日级净值序列 / 某日快照</td></tr>
+            <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/minutes</code></td><td>逐分钟净值(组合),<code>?limit=&amp;offset=</code>(响应头 <code>X-Total-Count</code>,数据来自 <code>minute_equity.csv</code>)</td></tr>
             <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/trades</code></td><td>成交,<code>?trade_date=&amp;symbol=&amp;strategy_id=&amp;limit=&amp;offset=</code>(响应头 <code>X-Total-Count</code>)</td></tr>
             <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/rejections</code> · <code>/rejections/summary</code></td><td>拒单(同上过滤)/ 按原因计数</td></tr>
             <tr><td><span class="method m-get">GET</span></td><td><code>/backtests/{job_id}/equity</code></td><td>净值曲线(起点 1.0)+ 回撤 + 可选基准,<code>?strategy_id=&amp;benchmark=&amp;rebase=</code></td></tr>
@@ -370,13 +372,15 @@ curl -s $B/backtests/$JOB/summary</code></pre></div>
 
       <section id="api-schema" class="section">
         <h3>2.4 请求 / 响应 Schema</h3>
-        <p>关键请求体(完整字段与响应见 <a href="/docs">/docs</a> 的 OpenAPI):</p>
+        <p>本节<strong>完整列出</strong>请求与响应的全部字段(无需跳转 Swagger);<a href="/docs">/docs</a> 仅作在线逐个试用的补充。</p>
         <div class="codewrap"><span class="lang">json</span><pre><code>// POST /accounts
 { "account_id": "demo", "initial_cash": 1000000, "engine": "replay", "name": "演示" }
 
 // POST /accounts/{id}/orders   (side: 1=买 2=卖)
+// 日级:price_type=open/close;分钟级:exec_time=HH:MM(at-or-after 成交,优先于 price_type)
 { "order_batch_id": "b1", "request_id": "buy-1", "trade_date": "2026-05-06",
-  "symbol": "600000.SH", "side": 1, "quantity": 1000, "limit_price": 10.50 }
+  "symbol": "600000.SH", "side": 1, "quantity": 1000,
+  "price_type": "close", "exec_time": "10:30", "limit_price": 10.50 }
 
 // POST /backtests   (strategies 省略=按 order_batch_id 单策略回放)
 { "account_id": "demo", "order_batch_id": "b1",
@@ -388,7 +392,111 @@ curl -s $B/backtests/$JOB/summary</code></pre></div>
   "execution": {"commission_rate":0.0003,"min_commission":5,"stamp_tax_rate":0.0005,
                 "transfer_fee_rate":0.00001,"max_volume_participation":1.0,"slippage_bps":0} }</code></pre></div>
         <div class="callout note"><span class="ic">📌</span><p>同步校验(立即 400,不入队):<code>frequency</code> 必须 <code>1min</code>、<code>price_adjustment</code> / <code>order_price_adjustment</code> 必须 <code>qfq</code>。<code>start_date</code>/<code>end_date</code> 缺失会让作业 <code>failed: start_end_required</code>。</p></div>
-        <p>汇总响应 <code>GET /backtests/{job_id}/summary</code> 顶层:<code>cash / market_value / total_value / total_return / max_drawdown / realized_pnl</code> + <code>positions[] / trades[] / rejections[] / daily[] / strategies[] / artifacts{}</code>。</p>
+        <h4>请求字段</h4>
+        <p><strong>建账户</strong> <code>POST /accounts</code></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>约束 / 说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>account_id</code></td><td>string</td><td>是</td><td>1–64 字符</td></tr>
+            <tr><td><code>initial_cash</code></td><td>number</td><td>是</td><td>&gt; 0</td></tr>
+            <tr><td><code>engine</code></td><td>enum</td><td>否</td><td>仅 <code>replay</code>(旧值 backtrader/qlib/… 自动归一)</td></tr>
+            <tr><td><code>name</code></td><td>string</td><td>否</td><td>≤128</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>下单</strong> <code>POST /accounts/{id}/orders</code></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>约束 / 说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>order_batch_id</code></td><td>string</td><td>否</td><td>默认 <code>default</code>;构成幂等键</td></tr>
+            <tr><td><code>request_id</code></td><td>string</td><td>是</td><td>同账户+批次唯一(重复 → 409)</td></tr>
+            <tr><td><code>trade_date</code></td><td>date</td><td>是</td><td><code>YYYY-MM-DD</code></td></tr>
+            <tr><td><code>symbol</code></td><td>string</td><td>是</td><td>如 <code>600000.SH</code>(自动规整)</td></tr>
+            <tr><td><code>side</code></td><td>int</td><td>是</td><td><strong>1=买 / 2=卖</strong>(须数字,否则 422)</td></tr>
+            <tr><td><code>quantity</code></td><td>int</td><td>是</td><td>&gt; 0</td></tr>
+            <tr><td><code>price_type</code></td><td>enum</td><td>否</td><td><code>open</code>/<code>close</code>(日级:当日首/末分钟)</td></tr>
+            <tr><td><code>exec_time</code></td><td>string</td><td>否</td><td><code>HH:MM[:SS]</code>(分钟级:at-or-after 成交,优先于 price_type)</td></tr>
+            <tr><td><code>limit_price</code></td><td>number</td><td>否</td><td>&gt; 0 真实价;不填按 default_price_type 取价</td></tr>
+            <tr><td><code>comment</code></td><td>string</td><td>否</td><td>≤512</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>提交回测</strong> <code>POST /backtests</code></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>字段</th><th>类型</th><th>默认</th><th>约束 / 说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>account_id</code></td><td>string</td><td>—</td><td>不存在 → 404</td></tr>
+            <tr><td><code>order_batch_id</code></td><td>string</td><td><code>default</code></td><td>单策略时按此批次回放</td></tr>
+            <tr><td><code>market_data_set_id</code></td><td>string</td><td><code>default-qfq</code></td><td>—</td></tr>
+            <tr><td><code>frequency</code></td><td>string</td><td><code>1min</code></td><td>≠1min → 400 unsupported_frequency</td></tr>
+            <tr><td><code>price_adjustment</code></td><td>enum</td><td><code>qfq</code></td><td>≠qfq → 400</td></tr>
+            <tr><td><code>order_price_adjustment</code></td><td>enum</td><td>=price_adjustment</td><td>≠qfq → 400</td></tr>
+            <tr><td><code>default_price_type</code></td><td>enum</td><td><code>close</code></td><td>open / close</td></tr>
+            <tr><td><code>start_date</code> / <code>end_date</code></td><td>date</td><td>null</td><td>缺失 → 作业 failed: start_end_required</td></tr>
+            <tr><td><code>strategies[]</code></td><td>array</td><td><code>[]</code></td><td>空=单策略回放;非空=每策略独立子账户(见下)</td></tr>
+            <tr><td><code>execution</code></td><td>object</td><td>缺省费率</td><td>见下;省略则行为不变</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>策略项</strong> <code>strategies[]</code> 与 <strong>撮合参数</strong> <code>execution</code></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>字段</th><th>默认</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>strategy_id</code></td><td>—</td><td>策略标识(必填)</td></tr>
+            <tr><td><code>strategy_type</code></td><td><code>order_replay</code></td><td>策略类型</td></tr>
+            <tr><td><code>initial_cash</code></td><td>账户初始</td><td>该子账户初始资金</td></tr>
+            <tr><td><code>symbols[]</code></td><td>自动</td><td>不填则取该批次出现过的代码</td></tr>
+            <tr><td><code>params.order_batch_id</code></td><td>—</td><td>该策略回放的订单批次</td></tr>
+            <tr><td><code>commission_rate</code></td><td>0.0003</td><td>佣金率</td></tr>
+            <tr><td><code>min_commission</code></td><td>5</td><td>最低佣金(元)</td></tr>
+            <tr><td><code>stamp_tax_rate</code></td><td>0.0005</td><td>印花税率(仅卖出)</td></tr>
+            <tr><td><code>transfer_fee_rate</code></td><td>0.00001</td><td>过户费率</td></tr>
+            <tr><td><code>max_volume_participation</code></td><td>1.0</td><td>量能参与上限(0–1)</td></tr>
+            <tr><td><code>slippage_bps</code></td><td>0</td><td>滑点(基点)</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout note"><span class="ic">📌</span><p>同步校验(立即 400,不入队):<code>frequency</code> 必须 <code>1min</code>、<code>price_adjustment</code> / <code>order_price_adjustment</code> 必须 <code>qfq</code>。其余执行期错误体现在作业 <code>status:failed</code> 的 <code>error</code>。</p></div>
+
+        <h4>响应字段</h4>
+        <p><strong>作业对象</strong> <code>GET /backtests/{job_id}</code></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>job_id</code></td><td>string</td><td>作业 UUID</td></tr>
+            <tr><td><code>account_id</code></td><td>string</td><td>所属账户</td></tr>
+            <tr><td><code>status</code></td><td>enum</td><td>见 §3 状态机</td></tr>
+            <tr><td><code>order_batch_id</code> / <code>market_data_set_id</code></td><td>string</td><td>回放批次 / 数据集</td></tr>
+            <tr><td><code>frequency</code> / <code>price_adjustment</code> / <code>default_price_type</code></td><td>enum</td><td>回测参数回显</td></tr>
+            <tr><td><code>start_date</code> / <code>end_date</code></td><td>date</td><td>回测区间</td></tr>
+            <tr><td><code>created_at</code> / <code>completed_at</code></td><td>datetime</td><td>创建 / 完成时间</td></tr>
+            <tr><td><code>progress</code></td><td>object</td><td>运行进度</td></tr>
+            <tr><td><code>report_dir</code></td><td>string</td><td>落盘报告目录</td></tr>
+            <tr><td><code>summary</code></td><td>object</td><td>汇总(仅 completed 非空,见下)</td></tr>
+            <tr><td><code>strategy_ids</code></td><td>string[]</td><td>派生策略名</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>汇总对象</strong> <code>GET /backtests/{job_id}/summary</code></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>cash</code> / <code>market_value</code> / <code>total_value</code></td><td>number</td><td>现金 / 持仓市值 / 总资产</td></tr>
+            <tr><td><code>total_return</code> / <code>max_drawdown</code></td><td>number</td><td>总收益率 / 最大回撤(小数)</td></tr>
+            <tr><td><code>realized_pnl</code></td><td>number</td><td>已实现盈亏</td></tr>
+            <tr><td><code>positions[]</code></td><td>array</td><td>当前持仓(Position,见下)</td></tr>
+            <tr><td><code>trades[]</code> / <code>rejections[]</code></td><td>array</td><td>成交 / 拒单(见下)</td></tr>
+            <tr><td><code>daily[]</code></td><td>array</td><td>每日快照(DailySnapshot,见下)</td></tr>
+            <tr><td><code>strategies[]</code></td><td>array</td><td>各策略明细(顶层同款字段 + <code>strategy_id / strategy_type / order_batch_id / initial_cash / daily</code>)</td></tr>
+            <tr><td><code>artifacts{}</code></td><td>object</td><td>落盘文件相对路径</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>嵌套对象</strong>(持仓 / 成交 / 拒单 / 日快照 / 逐分钟)</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>对象</th><th>字段</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Position</strong> 持仓</td><td><code>symbol, quantity, available_quantity</code>(可卖,T+1)<code>, cost_basis, last_price, market_value, unrealized_pnl, unrealized_pnl_ratio, strategy_id?</code></td></tr>
+            <tr><td><strong>Trade</strong> 成交</td><td><code>trade_id, request_id, trade_date, symbol, side, side_name, requested_quantity</code>(原始量)<code>, quantity</code>(实际)<code>, price, amount, commission, stamp_tax, transfer_fee, realized_pnl, cash_after, strategy_id?</code></td></tr>
+            <tr><td><strong>Rejection</strong> 拒单</td><td><code>request_id, trade_date, symbol, side, side_name, quantity, reason</code>(枚举见 2.5)<code>, strategy_id?</code></td></tr>
+            <tr><td><strong>DailySnapshot</strong> 日快照</td><td><code>trade_date, cash, market_value, total_value, daily_pnl, total_return, drawdown, positions[], trades[], rejections[], strategy_id?</code></td></tr>
+            <tr><td><strong>逐分钟</strong> <code>/minutes</code></td><td><code>timestamp, cash, market_value, total_value</code>(组合级)</td></tr>
+          </tbody>
+        </table></div>
       </section>
 
       <section id="api-errors" class="section">

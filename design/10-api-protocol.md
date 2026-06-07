@@ -140,6 +140,7 @@ curl -s $B/backtests/$JOB/summary
 | GET | `/backtests/{job_id}` | 作业状态 + 进度 `progress` |
 | GET | `/backtests/{job_id}/summary` | 账户级汇总 + 各策略 + 日级 `daily` |
 | GET | `/backtests/{job_id}/daily` · `/daily/{trade_date}` | 日级净值序列 / 某日快照 |
+| GET | `/backtests/{job_id}/minutes?limit=&offset=` | 逐分钟净值(组合 `timestamp/cash/market_value/total_value`;来自 `minute_equity.csv`,响应头 `X-Total-Count`) |
 | GET | `/backtests/{job_id}/trades?trade_date=&symbol=&strategy_id=&limit=&offset=` | 成交(分页,响应头 `X-Total-Count`) |
 | GET | `/backtests/{job_id}/rejections?trade_date=&reason=&strategy_id=&limit=&offset=` | 拒单(同上) |
 | GET | `/backtests/{job_id}/rejections/summary` | 拒单按原因计数 `{counts, total}` |
@@ -156,12 +157,14 @@ curl -s $B/backtests/$JOB/summary
 | GET | `/leaderboard?account_id=&metric=&scope=&top=` | 排行榜(多指标;`metric`+`scope`=best/latest 决定排名) |
 | GET | `/strategies/compare?ids=a,b&account_id=&benchmark=` | A/B 对比:净值叠加 + 指标并排 |
 
-### 4.4 托管看板(静态)
+### 4.4 托管页面
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/` | 302 重定向到 `/ui/` |
 | GET | `/ui/` | 只读 SPA 看板(策略中心 / 排行榜 / 全部回测) |
+| GET | `/guide` | 技术文档站(系统设计 / HTTP 接口协议 / 环境部署,精修 HTML) |
+| GET | `/docs` · `/redoc` | 交互式 API(Swagger / ReDoc) |
 
 ---
 
@@ -184,7 +187,8 @@ curl -s $B/backtests/$JOB/summary
 
 ```json
 { "order_batch_id": "b1", "request_id": "buy-1", "trade_date": "2026-05-06",
-  "symbol": "600000.SH", "side": 1, "quantity": 1000, "limit_price": 10.50 }
+  "symbol": "600000.SH", "side": 1, "quantity": 1000,
+  "price_type": "close", "exec_time": "10:30", "limit_price": 10.50 }
 ```
 
 | 字段 | 类型 | 必填 | 约束 |
@@ -195,7 +199,8 @@ curl -s $B/backtests/$JOB/summary
 | `symbol` | string | 是 | 如 `600000.SH` / `000001.SZ`(自动规整大小写) |
 | `side` | int | 是 | **1=买,2=卖**(必须数字,布尔/字符串报 422) |
 | `quantity` | int | 是 | > 0 |
-| `price_type` | enum | 否 | `open` / `close` |
+| `price_type` | enum | 否 | `open` / `close`(日级:当日首/末分钟) |
+| `exec_time` | string | 否 | `HH:MM[:SS]` 盘中择时(分钟级:当日 at-or-after 该分钟成交,优先于 `price_type`) |
 | `limit_price` | number | 否 | > 0(真实价;不填按 `default_price_type` 取价) |
 | `comment` | string | 否 | ≤512 |
 
@@ -249,7 +254,8 @@ curl -s $B/backtests/$JOB/summary
 加 `positions[] / trades[] / rejections[] / daily[] / strategies[] / artifacts{}`。
 - `daily[]`:每个交易日 `{trade_date, cash, market_value, total_value, daily_pnl, total_return, drawdown, positions, trades, rejections}`。
 - `trades[]`:含 `realized_pnl`(已实现盈亏)、`requested_quantity`(原始下单量,识别量能上限导致的部分成交)、`commission/stamp_tax/transfer_fee/cash_after`。
-- `artifacts{}`:落盘 CSV/JSON 的相对路径(`account_summary.json / trades.csv / rejections.csv / positions.csv / daily_equity.csv`)。
+- **逐分钟净值**:不进 summary JSON,经 `GET /backtests/{job_id}/minutes` 取(组合 `timestamp/cash/market_value/total_value`),落盘 `minute_equity.csv`(规避膨胀)。
+- `artifacts{}`:落盘 CSV/JSON 的相对路径(`account_summary.json / trades.csv / rejections.csv / positions.csv / daily_equity.csv / minute_equity.csv`)。
 
 ---
 
