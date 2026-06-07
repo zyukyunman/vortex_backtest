@@ -35,9 +35,9 @@
 服务是独立 HTTP 服务，回测**异步**（提交即返回 `job_id`，轮询到 `completed`）。CLI 是它的协议客户端。
 
 ```bash
-# (1) 起服务（默认 127.0.0.1:8765）
-./.venv/bin/python -m vortex_backtest.cli serve --port 8765
-#   或安装后直接：vortex-backtest serve --port 8765
+# (1) 起服务（默认 127.0.0.1:8767）
+./.venv/bin/python -m vortex_backtest.cli serve --port 8767
+#   或安装后直接：vortex-backtest serve --port 8767
 
 # 另开一个终端：
 # (2) 建账户（默认引擎 replay）

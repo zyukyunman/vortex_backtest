@@ -1,10 +1,11 @@
 # 自研（replay）分钟级 A 股回测引擎设计（历史快照）
 
 > 注：本文为早期设计快照。引擎实为**自研纯 Python 分钟撮合**，早期误称 "Backtrader" 但从未真正使用该框架；已于 2026-06-07 正名为 `replay`、并删除 backtrader 死依赖（见 design/14、design/15）。下文 "Backtrader" 字样按 `replay` 引擎理解。
+> 另：分钟级报告端点（`/minutes`）已移除（报告统一为**日级**）；服务端口规范已改为 **8767**（避开 vortex_data 的 8765）。
 
 ## 目标
 
-`vortex_backtest` 固定为独立 HTTP 回测服务：HTTP 层负责账户、订单批次、策略配置和报告查询；回测层使用 Backtrader 作为分钟事件驱动基础，并由服务内 A 股规则层完成账户账本、成交、拒单、净值和 artifact 归一化。
+`vortex_backtest` 固定为独立 HTTP 回测服务：HTTP 层负责账户、订单批次、策略配置和报告查询；回测层使用**自研纯 Python 分钟事件撮合**（`replay` 引擎），并由服务内 A 股规则层完成账户账本、成交、拒单、净值和 artifact 归一化。
 
 第一阶段只支持 A 股现金账户、`1min` 分钟频率、前复权 `qfq` 单一价格口径、多策略独立账户回测。RQAlpha 和旧 `ashare_replay` 不再作为正式路径，也不做 fallback。
 
@@ -69,7 +70,6 @@ qfq 价格生成规则：同一 symbol 在回测区间内取最后一个 `adj_fa
 
 - `GET /backtests/{job_id}/summary`
 - `GET /backtests/{job_id}/daily`
-- `GET /backtests/{job_id}/minutes`
 - `GET /backtests/{job_id}/trades`
 - `GET /backtests/{job_id}/rejections`
 - `GET /accounts/{account_id}/summary`
@@ -90,14 +90,14 @@ python3 -m venv .venv
 export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
 export VORTEX_BACKTEST_STATE_DIR=/tmp/vortex-backtest-state
 export VORTEX_BACKTEST_HOST=127.0.0.1
-export VORTEX_BACKTEST_PORT=8765
-.venv/bin/vortex-backtest
+export VORTEX_BACKTEST_PORT=8767
+.venv/bin/vortex-backtest serve
 ```
 
 健康检查：
 
 ```bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8767/health
 ```
 
 如果当前 workspace 没有 `data/stk_mins`，分钟回测会明确失败为 `minute_data_missing`。这不是服务异常，而是数据预检阻止伪分钟回测通过。

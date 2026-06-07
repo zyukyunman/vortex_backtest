@@ -64,14 +64,14 @@ python3.12 -m venv .venv
 export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
 export VORTEX_BACKTEST_STATE_DIR=/tmp/vortex-backtest-state
 export VORTEX_BACKTEST_HOST=127.0.0.1
-export VORTEX_BACKTEST_PORT=8765
+export VORTEX_BACKTEST_PORT=8767
 .venv/bin/vortex-backtest serve
 ```
 
 健康检查：
 
 ```bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8767/health
 ```
 
 如果本地没有 `data/stk_mins`，服务会启动成功，但分钟回测会失败为 `minute_data_missing`。这是预期的数据预检行为，不会伪装成日线回测成功。
@@ -81,7 +81,7 @@ curl http://127.0.0.1:8765/health
 创建账户：
 
 ```bash
-curl -X POST http://127.0.0.1:8765/accounts \
+curl -X POST http://127.0.0.1:8767/accounts \
   -H 'Content-Type: application/json' \
   -d '{"account_id":"demo","initial_cash":100000}'
 ```
@@ -89,7 +89,7 @@ curl -X POST http://127.0.0.1:8765/accounts \
 提交订单：
 
 ```bash
-curl -X POST http://127.0.0.1:8765/accounts/demo/orders \
+curl -X POST http://127.0.0.1:8767/accounts/demo/orders \
   -H 'Content-Type: application/json' \
   -d '{
     "order_batch_id":"batch-main",
@@ -105,7 +105,7 @@ curl -X POST http://127.0.0.1:8765/accounts/demo/orders \
 运行单策略回测：
 
 ```bash
-curl -X POST http://127.0.0.1:8765/backtests \
+curl -X POST http://127.0.0.1:8767/backtests \
   -H 'Content-Type: application/json' \
   -d '{
     "account_id":"demo",
@@ -128,11 +128,11 @@ curl -X POST http://127.0.0.1:8765/backtests \
 回测是**异步**的：`POST /backtests` 返回 `202 + job_id`，先轮询作业到完成，再取**日级**报告（已无分钟级端点）：
 
 ```bash
-curl http://127.0.0.1:8765/backtests/<job_id>            # 轮询 status 到 completed
-curl http://127.0.0.1:8765/backtests/<job_id>/summary
-curl http://127.0.0.1:8765/backtests/<job_id>/daily
-curl http://127.0.0.1:8765/backtests/<job_id>/trades
-curl http://127.0.0.1:8765/backtests/<job_id>/rejections
+curl http://127.0.0.1:8767/backtests/<job_id>            # 轮询 status 到 completed
+curl http://127.0.0.1:8767/backtests/<job_id>/summary
+curl http://127.0.0.1:8767/backtests/<job_id>/daily
+curl http://127.0.0.1:8767/backtests/<job_id>/trades
+curl http://127.0.0.1:8767/backtests/<job_id>/rejections
 ```
 
 也可用命令行（封装了提交+轮询）：
@@ -180,7 +180,7 @@ curl http://127.0.0.1:8765/backtests/<job_id>/rejections
 
 ```bash
 .venv/bin/python examples/run_30_day_http_sample.py \
-  --base-url http://127.0.0.1:8765 \
+  --base-url http://127.0.0.1:8767 \
   --workspace /Users/zyukyunman/Documents/vortex_workspace \
   --symbols 000001.SZ,688809.SH
 ```

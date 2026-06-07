@@ -14,17 +14,17 @@ cd /Users/zyukyunman/Documents/vortex/vortex_backtest
 export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex/vortex_data/workspace
 export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 
-# 2) 起服务（默认 127.0.0.1:8765，自带后台 worker 执行排队作业）
-./.venv/bin/python -m vortex_backtest.cli serve --host 127.0.0.1 --port 8765
+# 2) 起服务（默认 127.0.0.1:8767，自带后台 worker 执行排队作业）
+./.venv/bin/python -m vortex_backtest.cli serve --host 127.0.0.1 --port 8767
 ```
 
 起好后打开三个入口：
 
 | 入口 | 地址 | 用途 |
 |---|---|---|
-| 看板 | http://127.0.0.1:8765/ | 策略中心 / 排行榜 / 全部回测（可视化） |
-| 交互式 API 文档 | http://127.0.0.1:8765/docs | Swagger UI，点点就能试每个接口 |
-| 健康检查 | http://127.0.0.1:8765/health | 返回 `{"status":"ok"}` |
+| 看板 | http://127.0.0.1:8767/ | 策略中心 / 排行榜 / 全部回测（可视化） |
+| 交互式 API 文档 | http://127.0.0.1:8767/docs | Swagger UI，点点就能试每个接口 |
+| 健康检查 | http://127.0.0.1:8767/health | 返回 `{"status":"ok"}` |
 
 > `VORTEX_DATA_WORKSPACE` 指向 **workspace 根目录**（服务自动在后面接 `/data`）。漏配会让回测报 `minute_data_missing`。
 
@@ -56,7 +56,7 @@ export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 
 ## 3. 命令速查（CLI）
 
-CLI 既能起服务，也能当 HTTP 客户端。客户端默认连 `http://127.0.0.1:8765`（可用 `--base-url` 或环境变量 `VORTEX_BACKTEST_BASE_URL` 改）。
+CLI 既能起服务，也能当 HTTP 客户端。客户端默认连 `http://127.0.0.1:8767`（可用 `--base-url` 或环境变量 `VORTEX_BACKTEST_BASE_URL` 改）。
 
 ```bash
 PY="./.venv/bin/python -m vortex_backtest.cli"
@@ -118,7 +118,7 @@ $PY symbol 688169.SH                     # 看代码归属板块 + 手数/涨跌
 
 ## 4. REST 接口清单
 
-基址 `http://127.0.0.1:8765`。请求/响应均为 JSON。**最省事的学习方式：直接开 `/docs` 在线试。**
+基址 `http://127.0.0.1:8767`。请求/响应均为 JSON。**最省事的学习方式：直接开 `/docs` 在线试。**
 
 ### 写接口（建账户 / 下单 / 提交回测）
 
@@ -179,7 +179,7 @@ $PY symbol 688169.SH                     # 看代码归属板块 + 手数/涨跌
 curl 示例：
 
 ```bash
-B=http://127.0.0.1:8765
+B=http://127.0.0.1:8767
 curl -s "$B/backtests?account_id=demo"
 curl -s "$B/strategies?account_id=demo"
 curl -s "$B/leaderboard?account_id=demo&metric=total_return&scope=best"
@@ -191,7 +191,7 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 
 ## 5. 看板用法
 
-打开 http://127.0.0.1:8765/ ，顶部三标签：**首页（策略中心）/ 排行榜 / 全部回测**。
+打开 http://127.0.0.1:8767/ ，顶部三标签：**首页（策略中心）/ 排行榜 / 全部回测**。
 
 - **首页 = 策略中心**：顶部 KPI（策略数 / 运行中 / 近 7 天活跃 / 历史最优收益）；**排行榜**一行同时看 收益·年化·Sharpe·Calmar·回撤 + 标的，右上「排序依据」切指标与 最优/最新；**我的策略**表（收藏★、置顶、回测次数；勾选 ≥2 个点「对比」）；**运行中** + **近期活动**（状态点 + 完成/失败徽章 + 相对时间）。
 - **策略详情**（点策略名进入）：最新/最优指标卡 + **净值曲线（起点 1.0，叠加沪深300，下方回撤轴）** + **历次回测**（点某次下钻到该次明细）+ **当前持仓** + **成交记录**。
@@ -218,7 +218,7 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 | 现象 | 原因 / 处理 |
 |---|---|
 | 回测 `failed: minute_data_missing` | 起服务时没设 `VORTEX_DATA_WORKSPACE`，或订单日期落在 23 天窗口外 |
-| 端口被占 | `lsof -ti tcp:8765 \| xargs kill -9` 后重启 |
+| 端口被占 | `lsof -ti tcp:8767 \| xargs kill -9` 后重启 |
 | 写接口 403 | 绑了非回环 host 且没配 `VORTEX_BACKTEST_TOKEN`；本机回环默认放行 |
 | 基准为空 | 没设 `VORTEX_INDEX_DATA_DIR`（指向 `.../workspace/data/index_daily`） |
 | 看板图表不显示 | 已本地内置 Chart.js（`web/static/vendor/`），缺失会退到内联 SVG 静态预览 |
@@ -230,9 +230,9 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 |---|---|---|
 | `VORTEX_DATA_WORKSPACE` | 行情 workspace 根目录（自动接 `/data`） | `/Users/zyukyunman/Documents/vortex/vortex_data/workspace` |
 | `VORTEX_INDEX_DATA_DIR` | 指数基准目录 | `$VORTEX_DATA_WORKSPACE/data/index_daily` |
-| `VORTEX_BACKTEST_HOST` / `PORT` | 服务监听地址 | `127.0.0.1` / `8765` |
+| `VORTEX_BACKTEST_HOST` / `PORT` | 服务监听地址 | `127.0.0.1` / `8767` |
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权（非回环必配） | 任意密钥 |
-| `VORTEX_BACKTEST_BASE_URL` | CLI 客户端默认连的服务地址 | `http://127.0.0.1:8765` |
+| `VORTEX_BACKTEST_BASE_URL` | CLI 客户端默认连的服务地址 | `http://127.0.0.1:8767` |
 | `VORTEX_BACKTEST_STATE_DIR` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
 
 ---

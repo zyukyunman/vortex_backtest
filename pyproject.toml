@@ -33,7 +33,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-# 显式声明包，避免 setuptools 把 design/ spike/ 等根目录当成待打包的包而报错
+# 显式声明包，避免 setuptools 把 design/ 等根目录当成待打包的包而报错
 packages = ["vortex_backtest"]
 
 [tool.setuptools.package-data]

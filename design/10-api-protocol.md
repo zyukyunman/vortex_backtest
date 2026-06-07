@@ -6,7 +6,7 @@ status: reference
 
 # HTTP 协议与命令行参考
 
-服务是 REST/JSON over HTTP，默认 `127.0.0.1:8765`。命令行 `vortex-backtest` 既能起服务（`serve`），也能作为协议客户端操作服务。
+服务是 REST/JSON over HTTP，默认 `127.0.0.1:8767`。命令行 `vortex-backtest` 既能起服务（`serve`），也能作为协议客户端操作服务。
 
 ## 异步作业生命周期（ADR-3，重要）
 
@@ -60,7 +60,7 @@ GET  /backtests/{job_id}/summary | /daily | /trades | /rejections   -> 取报告
 
 ## 命令行 `vortex-backtest`
 
-全局 `--base-url`（默认 `$VORTEX_BACKTEST_BASE_URL` 或 `http://127.0.0.1:8765`）。
+全局 `--base-url`（默认 `$VORTEX_BACKTEST_BASE_URL` 或 `http://127.0.0.1:8767`）。
 
 - `serve [--host --port --reload]` —— 起 HTTP 服务。
 - `account create --id --cash [--name]` · `account list` · `account get --id`
