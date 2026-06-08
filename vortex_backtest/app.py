@@ -241,6 +241,10 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         if row["status"] != "open":
             raise HTTPException(status_code=409, detail={"error": "session_closed"})
         rt = SessionRuntime.hydrate(row)
+        req_id = payload.get("request_id")
+        if req_id and req_id in rt.processed_advances:
+            # 幂等：同 request_id 已处理 → no-op，回当前状态（重试/网络重发安全，不双成交/双推进）
+            return {**rt.account_context(), "filled": [], "rejected": [], "cancelled": [], "duplicate": True}
         to_ts = _resolve_to(payload.get("to"), row, rt.sim_time)
         if not to_ts:
             raise HTTPException(status_code=400, detail={"error": "missing_to_or_end_date"})
@@ -259,12 +263,15 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
             )
         except ValueError as exc:  # 时钟不单调
             raise HTTPException(status_code=409, detail={"error": "non_monotonic_clock", "detail": str(exc)}) from exc
-        # 累积产物落 per-session JSONL（HTTP 无状态，跨 advance 持久化）
+        if req_id:
+            rt.processed_advances.append(req_id)
+        # 崩溃恢复：先更新会话行（状态权威，含 request_id 去重指纹），再追加 JSONL（日志）。
+        # 崩溃落在二者之间 → 状态已正确、日志略少；request_id 已记 → 重试被去重，绝不双成交/双推进。
+        data_store.update_session(session_id, **rt.dump())
         sdir = _session_dir(data_store, session_id)
         _append_jsonl(sdir / "trades.jsonl", rt.trades)
         _append_jsonl(sdir / "rejections.jsonl", rt.rejections)
         _append_jsonl(sdir / "snapshots.jsonl", rt.snapshots)
-        data_store.update_session(session_id, **rt.dump())
         return {**ctx, "filled": rt.trades, "rejected": rt.rejections, "cancelled": rt.last_cancelled}
 
     @app.post("/sessions/{session_id}/close")

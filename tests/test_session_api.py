@@ -132,3 +132,22 @@ def test_session_data_without_gateway_503(client, monkeypatch):
     sid = client.post("/sessions", json={"account_id": "a", "start_date": "2026-05-06", "end_date": "2026-05-07", "universe": ["X.SH"]}).json()["session_id"]
     r = client.post(f"/sessions/{sid}/data", json={"datasets": []})
     assert r.status_code == 503
+
+
+def test_advance_idempotent(client):
+    """幂等：同 request_id 重发 advance → no-op，不双成交/双推进。"""
+    client.post("/accounts", json={"account_id": "a", "initial_cash": 1_000_000})
+    sid = client.post("/sessions", json={
+        "account_id": "a", "level": "1min", "start_date": "2026-05-06", "end_date": "2026-05-07",
+        "universe": ["600519.SH"], "fill_timing": "this_bar"}).json()["session_id"]
+    body = {"orders": [{"request_id": "o1", "symbol": "600519.SH", "side": 1, "quantity": 100, "exec_time": "09:30"}],
+            "to": "2026-05-06T09:31:00", "request_id": "adv1"}
+    r1 = client.post(f"/sessions/{sid}/advance", json=body).json()
+    assert len(r1["filled"]) == 1
+    assert r1["positions"][0]["quantity"] == 100
+    # 重发同 request_id → 去重 no-op
+    r2 = client.post(f"/sessions/{sid}/advance", json=body).json()
+    assert r2.get("duplicate") is True
+    assert len(r2["filled"]) == 0
+    assert r2["positions"][0]["quantity"] == 100  # 没翻倍
+    assert r2["sim_time"] == r1["sim_time"]        # 时钟没重复推进

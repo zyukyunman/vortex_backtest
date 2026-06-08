@@ -76,6 +76,7 @@ class SessionRuntime:
     fill_timing: str = FILL_NEXT_BAR
     default_price_type: str = "close"
     slippage_bps: float = 0.0
+    processed_advances: list[str] = field(default_factory=list)  # 已处理的 advance request_id（幂等去重）
     # 累积产物（落 store/CSV 由 app 层负责）
     trades: list[dict[str, Any]] = field(default_factory=list)
     rejections: list[dict[str, Any]] = field(default_factory=list)
@@ -109,6 +110,7 @@ class SessionRuntime:
             fill_timing=cfg.get("fill_timing", FILL_NEXT_BAR),
             default_price_type=cfg.get("default_price_type", "close"),
             slippage_bps=float(cfg.get("slippage_bps", 0.0)),
+            processed_advances=list(cfg.get("processed_advances", [])),
         )
 
     def dump(self) -> dict[str, Any]:
@@ -125,6 +127,7 @@ class SessionRuntime:
             "slippage_bps": self.slippage_bps,
             "last_prices": self.last_prices,
             "current_date_key": self.current_date_key,
+            "processed_advances": self.processed_advances[-200:],  # 保留近 200 个去重指纹
         }
         return {
             "sim_time": self.sim_time.isoformat() if self.sim_time is not None else None,
