@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
@@ -7,30 +8,85 @@ import uuid
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .models import (
-    AccountCreate,
-    AccountOut,
-    AccountSummaryOut,
-    BacktestCreate,
-    BacktestJobOut,
-    DailySnapshotOut,
-    OrderCreate,
-    OrderOut,
-    PositionOut,
-    RejectionOut,
-    SymbolCrosswalkOut,
-    TradeOut,
-)
-from . import benchmark as benchmark_mod
-from . import strategies as strat_mod
-from .metrics import compute_metrics
-from .store import DataStore, normalize_account, normalize_job, normalize_order
+from .models import AccountCreate, AccountOut, SymbolCrosswalkOut
+from .store import DataStore, normalize_account
 from .symbols import crosswalk
-from .worker import JobWorker
+from .market_rules import AShareRuleEngine
+from .data_adapter import DEFAULT_WORKSPACE, TushareMinuteDataLoader
+from .session_engine import SessionRuntime
+from .session_engine import advance as session_advance
+from .session_engine import finalize as session_finalize
+
+
+def _workspace_dir() -> Path:
+    return Path(os.getenv("VORTEX_WORKSPACE", str(DEFAULT_WORKSPACE)))
+
+
+def _load_session_bars(symbols: list[str], start_d: date, end_d: date, as_of: str | None = None,
+                       anchor_d: date | None = None):
+    """加载会话所需富 bar。
+
+    配了 ``VORTEX_DATA_URL`` → 走 data 取数网关（服务端按 as_of 强制 PIT，前复权固定锚 anchor_d=会话起始）；
+    否则回退本地直读 ``data_adapter``（开发/离线用）。缺数据 → 返回空帧（优雅降级）。
+    """
+    if not symbols:
+        return pd.DataFrame(), []
+    if os.getenv("VORTEX_DATA_URL") and as_of:
+        from .gateway_adapter import GatewayDataAdapter, GatewayDataError
+
+        try:
+            ds = GatewayDataAdapter().load(
+                symbols=set(symbols), start_date=start_d, end_date=end_d,
+                as_of=as_of, anchor_date=anchor_d,
+            )
+            return ds.minutes, ds.calendar
+        except (ValueError, GatewayDataError):
+            return pd.DataFrame(), []
+    loader = TushareMinuteDataLoader(_workspace_dir())
+    try:
+        ds = loader.load(symbols=set(symbols), start_date=start_d, end_date=end_d)
+    except ValueError:
+        return pd.DataFrame(), []
+    return ds.minutes, ds.calendar
+
+
+def _append_jsonl(path: Path, rows: list) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+
+def _read_jsonl(path: Path) -> list:
+    if not path.exists():
+        return []
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def _resolve_to(to: str | None, session_row: dict, sim_time) -> str:
+    """把 advance 的 to 解析成时间戳字符串：显式时间戳 / 日期(@15:00) / 'end' / 'next_day'。"""
+    end_date = session_row.get("end_date")
+    if not to or to == "end":
+        return f"{end_date}T15:00:00" if end_date else (sim_time.isoformat() if sim_time is not None else "")
+    if to == "next_day":
+        base = sim_time.date() if sim_time is not None else date.fromisoformat(str(session_row["start_date"]))
+        return f"{base.isoformat()}T15:00:00"
+    if len(str(to)) <= 10:  # 仅日期
+        return f"{to}T15:00:00"
+    return str(to)
 
 
 def default_state_dir() -> Path:
@@ -80,13 +136,6 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         ),
     )
     app.state.store = store
-    # 崩溃恢复：把上次残留的 running 作业重排回 queued（ADR-3）
-    store.requeue_interrupted()
-    if run_worker:
-        worker = JobWorker(store)
-        worker.start()
-        app.state.worker = worker
-
     def get_store() -> DataStore:
         return store
 
@@ -123,446 +172,206 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     ) -> dict:
         return normalize_account(_get_account_or_404(data_store, account_id))
 
-    @app.post("/accounts/{account_id}/orders", response_model=OrderOut, status_code=201)
-    def create_order(
-        account_id: str,
-        payload: OrderCreate,
-        data_store: DataStore = Depends(get_store),
-        _auth: None = Depends(require_write_auth),
-    ) -> dict:
+    # ------------------------------------------------------------------
+    # 会话式回测（design/18：sessions/data/advance/close）
+    # ------------------------------------------------------------------
+
+    def _session_or_404(data_store: DataStore, session_id: str) -> dict:
         try:
-            row = data_store.create_order(account_id, payload)
+            return data_store.get_session(session_id)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="account not found") from exc
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail="request_id already exists for this account and order_batch_id",
-            ) from exc
-        return normalize_order(row)
+            raise HTTPException(status_code=404, detail="session not found") from exc
 
-    @app.get("/accounts/{account_id}/orders", response_model=list[OrderOut])
-    def list_orders(
-        account_id: str,
-        data_store: DataStore = Depends(get_store),
-        order_batch_id: str | None = Query(default=None),
-        start_date: date | None = Query(default=None),
-        end_date: date | None = Query(default=None),
-    ) -> list[dict]:
-        _get_account_or_404(data_store, account_id)
-        return [
-            normalize_order(row)
-            for row in data_store.list_orders(
-                account_id,
-                order_batch_id=order_batch_id,
-                start_date=start_date,
-                end_date=end_date,
-            )
-        ]
+    def _session_dir(data_store: DataStore, session_id: str) -> Path:
+        return data_store.report_root / "sessions" / session_id
 
-    @app.post("/backtests", response_model=BacktestJobOut, status_code=202)
-    def run_backtest(
-        payload: BacktestCreate,
+    @app.post("/sessions", status_code=201)
+    def create_session(
+        payload: dict = Body(...),
         data_store: DataStore = Depends(get_store),
         _auth: None = Depends(require_write_auth),
     ) -> dict:
-        _get_account_or_404(data_store, payload.account_id)
-        order_price_adjustment = payload.order_price_adjustment or payload.price_adjustment
-        # 同步校验：不支持的参数立即 400（不入队）
-        if payload.frequency != "1min":
-            raise HTTPException(status_code=400, detail={"error": "unsupported_frequency"})
-        if payload.price_adjustment.value != "qfq":
-            raise HTTPException(status_code=400, detail={"error": "unsupported_price_adjustment"})
-        if order_price_adjustment.value != "qfq":
-            raise HTTPException(status_code=400, detail={"error": "unsupported_order_price_adjustment"})
-        # 入队，后台 worker 执行（ADR-3）：立即返回 202 + job_id，客户端轮询状态
-        job_id = str(uuid.uuid4())
-        data_store.create_job(
-            job_id,
-            payload.account_id,
-            payload.order_batch_id,
-            payload.market_data_set_id,
-            payload.frequency,
-            payload.price_adjustment.value,
-            order_price_adjustment.value,
-            payload.default_price_type.value,
-            payload.start_date,
-            payload.end_date,
-            request_json=payload.model_dump_json(),
+        account_id = str(payload.get("account_id") or "")
+        account = _get_account_or_404(data_store, account_id)
+        level = str(payload.get("level") or "1min")
+        if level not in ("daily", "1min"):
+            raise HTTPException(status_code=400, detail={"error": "unsupported_level"})
+        universe = [str(s) for s in (payload.get("universe") or [])]
+        cfg = {
+            "strategy_id": str(payload.get("strategy_id") or "session"),
+            "fill_timing": str(payload.get("fill_timing") or "next_bar"),
+            "default_price_type": str(payload.get("default_price_type") or "close"),
+            "slippage_bps": float((payload.get("execution") or {}).get("slippage_bps", 0.0)),
+        }
+        session_id = str(uuid.uuid4())
+        row = data_store.create_session(
+            session_id=session_id, account_id=account_id, level=level,
+            start_date=payload.get("start_date"), end_date=payload.get("end_date"),
+            sim_time=None,  # 首个 advance 建立时钟
+            initial_cash=float(account["initial_cash"]),
+            universe=universe, config=cfg,
         )
-        return normalize_job(data_store.get_job(job_id))
+        rt = SessionRuntime.hydrate(row)
+        return {"session_id": session_id, "status": "open", "level": level, **rt.account_context()}
 
-    def _job_out(row: dict) -> dict:
-        """normalize_job + 派生 strategy_ids(便于列表直接显示策略名,不暴露内部路径)。"""
-        out = normalize_job(row)
-        sids: list[str] = []
-        for run in strat_mod._runs_from_job(strat_mod.job_view(row)):
-            sid = run.get("strategy_id")
-            if sid and sid not in sids:
-                sids.append(sid)
-        out["strategy_ids"] = sids
-        return out
-
-    @app.get("/backtests", response_model=list[BacktestJobOut])
-    def list_backtests(
-        data_store: DataStore = Depends(get_store),
+    @app.get("/sessions")
+    def list_sessions(
         account_id: str | None = Query(default=None),
-        status: str | None = Query(default=None),
-    ) -> list[dict]:
-        return [
-            _job_out(row)
-            for row in data_store.list_jobs(account_id=account_id, status=status)
-        ]
-
-    @app.get("/backtests/{job_id}", response_model=BacktestJobOut)
-    def get_backtest(
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-    ) -> dict:
-        return _job_out(_get_job_or_404(data_store, job_id))
-
-    @app.get("/backtests/{job_id}/summary", response_model=AccountSummaryOut)
-    def get_backtest_summary(
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-    ) -> dict:
-        return _completed_summary_or_404(data_store, job_id)
-
-    @app.get("/backtests/{job_id}/daily", response_model=list[DailySnapshotOut])
-    def get_backtest_daily_snapshots(
-        job_id: str,
         data_store: DataStore = Depends(get_store),
     ) -> list[dict]:
-        summary = _completed_summary_or_404(data_store, job_id)
-        return summary.get("daily", [])
+        return data_store.list_sessions(account_id)
 
-    @app.get("/backtests/{job_id}/daily/{trade_date}", response_model=DailySnapshotOut)
-    def get_backtest_daily_snapshot(
-        job_id: str,
-        trade_date: date,
-        data_store: DataStore = Depends(get_store),
+    @app.get("/sessions/{session_id}")
+    def get_session(
+        session_id: str, data_store: DataStore = Depends(get_store)
     ) -> dict:
-        summary = _completed_summary_or_404(data_store, job_id)
-        trade_date_text = trade_date.isoformat()
-        for snapshot in summary.get("daily", []):
-            if snapshot["trade_date"] == trade_date_text:
-                return snapshot
-        raise HTTPException(status_code=404, detail="daily snapshot not found")
+        row = _session_or_404(data_store, session_id)
+        rt = SessionRuntime.hydrate(row)
+        return {"session_id": session_id, "status": row["status"], "level": row["level"], **rt.account_context()}
 
-    @app.get("/backtests/{job_id}/trades", response_model=list[TradeOut])
-    def get_backtest_trades(
-        response: Response,
-        job_id: str,
+    @app.post("/sessions/{session_id}/advance")
+    def advance_session(
+        session_id: str,
+        payload: dict = Body(default=None),
         data_store: DataStore = Depends(get_store),
-        trade_date: date | None = Query(default=None),
+        _auth: None = Depends(require_write_auth),
+    ) -> dict:
+        payload = payload or {}
+        row = _session_or_404(data_store, session_id)
+        if row["status"] != "open":
+            raise HTTPException(status_code=409, detail={"error": "session_closed"})
+        rt = SessionRuntime.hydrate(row)
+        to_ts = _resolve_to(payload.get("to"), row, rt.sim_time)
+        if not to_ts:
+            raise HTTPException(status_code=400, detail={"error": "missing_to_or_end_date"})
+        from_d = rt.sim_time.date() if rt.sim_time is not None else date.fromisoformat(str(row["start_date"]))
+        to_d = pd.Timestamp(to_ts).date()
+        symbols = payload.get("set_universe") or rt.universe
+        anchor_d = date.fromisoformat(str(row["start_date"])) if row.get("start_date") else from_d
+        bars, _cal = _load_session_bars([str(s) for s in symbols], from_d, to_d, as_of=to_ts, anchor_d=anchor_d)
+        rules = AShareRuleEngine()
+        try:
+            ctx = session_advance(
+                rt, bars, rules=rules,
+                orders=payload.get("orders") or [],
+                set_universe=payload.get("set_universe"), to=to_ts,
+                cancel=payload.get("cancel"),
+            )
+        except ValueError as exc:  # 时钟不单调
+            raise HTTPException(status_code=409, detail={"error": "non_monotonic_clock", "detail": str(exc)}) from exc
+        # 累积产物落 per-session JSONL（HTTP 无状态，跨 advance 持久化）
+        sdir = _session_dir(data_store, session_id)
+        _append_jsonl(sdir / "trades.jsonl", rt.trades)
+        _append_jsonl(sdir / "rejections.jsonl", rt.rejections)
+        _append_jsonl(sdir / "snapshots.jsonl", rt.snapshots)
+        data_store.update_session(session_id, **rt.dump())
+        return {**ctx, "filled": rt.trades, "rejected": rt.rejections, "cancelled": rt.last_cancelled}
+
+    @app.post("/sessions/{session_id}/close")
+    def close_session(
+        session_id: str,
+        data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
+    ) -> dict:
+        row = _session_or_404(data_store, session_id)
+        rt = SessionRuntime.hydrate(row)
+        sdir = _session_dir(data_store, session_id)
+        rt.trades = _read_jsonl(sdir / "trades.jsonl")
+        rt.rejections = _read_jsonl(sdir / "rejections.jsonl")
+        rt.snapshots = _read_jsonl(sdir / "snapshots.jsonl")
+        calendar = sorted({int(s["timestamp"][:10].replace("-", "")) for s in rt.snapshots})
+        summary = session_finalize(rt, calendar)
+        (sdir).mkdir(parents=True, exist_ok=True)
+        (sdir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, default=str), encoding="utf-8")
+        data_store.update_session(session_id, status="closed")
+        return {"session_id": session_id, "status": "closed", "summary": {
+            k: summary[k] for k in ("total_return", "max_drawdown", "realized_pnl", "cash", "total_value")
+        }}
+
+    def _session_summary(data_store: DataStore, session_id: str) -> dict:
+        """会话汇总：已 close 读 summary.json；否则按当前累积产物即时归约（读到当前 sim_time）。"""
+        row = _session_or_404(data_store, session_id)
+        sdir = _session_dir(data_store, session_id)
+        cached = sdir / "summary.json"
+        if row["status"] == "closed" and cached.exists():
+            return json.loads(cached.read_text(encoding="utf-8"))
+        rt = SessionRuntime.hydrate(row)
+        rt.trades = _read_jsonl(sdir / "trades.jsonl")
+        rt.rejections = _read_jsonl(sdir / "rejections.jsonl")
+        rt.snapshots = _read_jsonl(sdir / "snapshots.jsonl")
+        calendar = sorted({int(s["timestamp"][:10].replace("-", "")) for s in rt.snapshots})
+        return session_finalize(rt, calendar)
+
+    @app.get("/sessions/{session_id}/summary")
+    def session_summary(session_id: str, data_store: DataStore = Depends(get_store)) -> dict:
+        s = _session_summary(data_store, session_id)
+        return {k: s.get(k) for k in (
+            "strategy_id", "initial_cash", "cash", "market_value", "total_value",
+            "total_return", "max_drawdown", "realized_pnl", "positions")}
+
+    @app.get("/sessions/{session_id}/daily")
+    def session_daily(session_id: str, data_store: DataStore = Depends(get_store)) -> list[dict]:
+        return _session_summary(data_store, session_id).get("daily", [])
+
+    @app.get("/sessions/{session_id}/trades")
+    def session_trades(
+        session_id: str, data_store: DataStore = Depends(get_store),
         symbol: str | None = Query(default=None),
-        strategy_id: str | None = Query(default=None),
-        limit: int | None = Query(default=None, ge=1),
-        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=500, ge=1, le=5000), offset: int = Query(default=0, ge=0),
     ) -> list[dict]:
-        summary = _completed_summary_or_404(data_store, job_id)
-        trades = list(summary.get("trades", []))
-        if trade_date is not None:
-            trade_date_text = trade_date.isoformat()
-            trades = [trade for trade in trades if trade["trade_date"] == trade_date_text]
-        if symbol is not None:
-            trades = [trade for trade in trades if trade.get("symbol") == symbol]
-        if strategy_id is not None:
-            trades = [trade for trade in trades if trade.get("strategy_id") == strategy_id]
-        # 过滤后、分页前的总数，供前端服务端分页计算页数
-        response.headers["X-Total-Count"] = str(len(trades))
-        if offset:
-            trades = trades[offset:]
-        if limit is not None:
-            trades = trades[:limit]
-        return trades
+        _session_or_404(data_store, session_id)
+        trades = _read_jsonl(_session_dir(data_store, session_id) / "trades.jsonl")
+        if symbol:
+            trades = [t for t in trades if t.get("symbol") == symbol]
+        return trades[offset:offset + limit]
 
-    @app.get("/backtests/{job_id}/rejections", response_model=list[RejectionOut])
-    def get_backtest_rejections(
-        response: Response,
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-        trade_date: date | None = Query(default=None),
-        reason: str | None = Query(default=None),
-        strategy_id: str | None = Query(default=None),
-        limit: int | None = Query(default=None, ge=1),
-        offset: int = Query(default=0, ge=0),
+    @app.get("/sessions/{session_id}/rejections")
+    def session_rejections(
+        session_id: str, data_store: DataStore = Depends(get_store),
+        limit: int = Query(default=500, ge=1, le=5000), offset: int = Query(default=0, ge=0),
     ) -> list[dict]:
-        summary = _completed_summary_or_404(data_store, job_id)
-        rejections = list(summary.get("rejections", []))
-        if trade_date is not None:
-            trade_date_text = trade_date.isoformat()
-            rejections = [r for r in rejections if r["trade_date"] == trade_date_text]
-        if reason is not None:
-            rejections = [r for r in rejections if r.get("reason") == reason]
-        if strategy_id is not None:
-            rejections = [r for r in rejections if r.get("strategy_id") == strategy_id]
-        response.headers["X-Total-Count"] = str(len(rejections))
-        if offset:
-            rejections = rejections[offset:]
-        if limit is not None:
-            rejections = rejections[:limit]
-        return rejections
+        _session_or_404(data_store, session_id)
+        rej = _read_jsonl(_session_dir(data_store, session_id) / "rejections.jsonl")
+        return rej[offset:offset + limit]
 
-    @app.get("/backtests/{job_id}/rejections/summary")
-    def get_backtest_rejection_summary(
-        job_id: str,
+    @app.get("/sessions/{session_id}/minutes")
+    def session_minutes(
+        session_id: str, data_store: DataStore = Depends(get_store),
+        limit: int = Query(default=1000, ge=1, le=10000), offset: int = Query(default=0, ge=0),
+    ) -> list[dict]:
+        _session_or_404(data_store, session_id)
+        snaps = _read_jsonl(_session_dir(data_store, session_id) / "snapshots.jsonl")
+        slim = [{"timestamp": s["timestamp"], "cash": s["cash"],
+                 "market_value": s["market_value"], "total_value": s["total_value"]} for s in snaps]
+        return slim[offset:offset + limit]
+
+    @app.post("/sessions/{session_id}/data")
+    def session_data(
+        session_id: str,
+        payload: dict = Body(...),
         data_store: DataStore = Depends(get_store),
+        _auth: None = Depends(require_write_auth),
     ) -> dict:
-        summary = _completed_summary_or_404(data_store, job_id)
-        counts: dict[str, int] = {}
-        for rejection in summary.get("rejections", []):
-            key = str(rejection.get("reason", "unknown"))
-            counts[key] = counts.get(key, 0) + 1
-        ordered = dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
-        return {"counts": ordered, "total": sum(counts.values())}
+        """策略取数（design/18 §3.2）：透传到 data 网关，**服务端用会话 sim_time 当 as_of**（不信客户端时间）。
 
-    def _daily_for(summary: dict, strategy_id: str | None) -> list[dict]:
-        if strategy_id:
-            for strat in summary.get("strategies", []):
-                if strat.get("strategy_id") == strategy_id:
-                    return strat.get("daily", [])
-            raise HTTPException(status_code=404, detail="strategy not found")
-        return summary.get("daily", [])
-
-    @app.get("/backtests/{job_id}/equity")
-    def get_backtest_equity(
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-        strategy_id: str | None = Query(default=None),
-        benchmark: str | None = Query(default=None),
-        rebase: bool = Query(default=False),
-    ) -> dict:
-        """日级净值 + 回撤（仅日级）；可选基准对标（rebase 到 100 同起点）。"""
-        summary = _completed_summary_or_404(data_store, job_id)
-        job = normalize_job(_get_job_or_404(data_store, job_id))
-        daily = _daily_for(summary, strategy_id)
-        dates = [row["trade_date"] for row in daily]
-        equity = [float(row["total_value"]) for row in daily]
-        drawdown = [float(row.get("drawdown", 0.0)) for row in daily]
-        try:
-            initial_cash = float(_get_account_or_404(data_store, job["account_id"])["initial_cash"])
-        except HTTPException:
-            initial_cash = equity[0] if equity else 0.0
-        rebased = bool(rebase) or bool(benchmark)
-        result: dict = {"dates": dates, "drawdown": drawdown, "rebase": rebased}
-        if rebased and equity and equity[0]:
-            base0 = equity[0]
-            result["equity"] = [round(v / base0, 6) for v in equity]  # 起点 1.0
-            result["baseline"] = 1.0
-        else:
-            result["equity"] = equity
-            result["baseline"] = initial_cash
-        if benchmark:
-            series = benchmark_mod.benchmark_series(benchmark, dates, base=1.0)
-            result["benchmark"] = {
-                "symbol": benchmark,
-                "values": series,
-                "available": series is not None,
-            }
-        return result
-
-    @app.get("/backtests/{job_id}/minutes")
-    def get_backtest_minutes(
-        job_id: str,
-        response: Response,
-        data_store: DataStore = Depends(get_store),
-        limit: int = Query(default=2000, ge=0),
-        offset: int = Query(default=0, ge=0),
-    ) -> list[dict]:
-        """逐分钟净值（组合）：timestamp/cash/market_value/total_value。
-
-        分页（limit/offset，limit=0 取到末尾），总数在响应头 `X-Total-Count`。
-        数据来自回测产物 `minute_equity.csv`（不进 SQLite，规避膨胀）。
+        `symbols:"universe"` 由本服务展开成显式列表再下发（data 无会话状态）。需配 `VORTEX_DATA_URL`。
         """
-        summary = _completed_summary_or_404(data_store, job_id)
-        rows = _read_minute_equity(summary)
-        response.headers["X-Total-Count"] = str(len(rows))
-        return rows[offset:] if limit == 0 else rows[offset : offset + limit]
-
-    @app.get("/backtests/{job_id}/metrics")
-    def get_backtest_metrics(
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-        strategy_id: str | None = Query(default=None),
-        benchmark: str | None = Query(default=None),
-    ) -> dict:
-        """绩效指标（绝对 / 风险调整 / 基准相对）+ 短样本护栏。"""
-        summary = _completed_summary_or_404(data_store, job_id)
-        daily = _daily_for(summary, strategy_id)
-        values = [float(row["total_value"]) for row in daily]
-        dates = [row["trade_date"] for row in daily]
-        bench_values = None
-        bench_info = None
-        if benchmark:
-            series = benchmark_mod.benchmark_series(benchmark, dates)
-            bench_values = series
-            bench_info = {"symbol": benchmark, "available": series is not None}
-        metrics = compute_metrics(values, benchmark_values=bench_values)
-        if bench_info is not None:
-            metrics["benchmark"] = bench_info
-        return metrics
-
-    @app.get("/benchmarks")
-    def get_benchmarks() -> dict:
-        return benchmark_mod.list_benchmarks()
-
-    @app.post("/backtests/{job_id}/cancel", response_model=BacktestJobOut)
-    def cancel_backtest(
-        job_id: str,
-        data_store: DataStore = Depends(get_store),
-        _auth: None = Depends(require_write_auth),
-    ) -> dict:
-        """取消作业：排队中→cancelled；运行中无法安全中断（同步执行）→409；终态→409。"""
-        job = normalize_job(_get_job_or_404(data_store, job_id))
-        status = job["status"]
-        if status == "queued":
-            data_store.cancel_queued_job(job_id)
-            return normalize_job(data_store.get_job(job_id))
-        if status == "running":
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "cannot_cancel_running", "hint": "运行中作业暂不支持中断，待其完成"},
-            )
-        raise HTTPException(status_code=409, detail={"error": "not_cancellable", "status": status})
-
-    # ---- 策略中心(按 strategy_id 从回测派生的只读聚合) ----
-    def _aggregates(account: str | None, best_metric: str) -> list[dict]:
-        rows = store.list_jobs(account_id=account)
-        views = [strat_mod.job_view(row) for row in rows]
-        meta = store.get_strategy_meta(account) if account else {}
-        return strat_mod.aggregate(views, meta=meta, best_metric=best_metric)
-
-    def _strategy_daily(job_id: str, strategy_id: str) -> list[dict]:
+        row = _session_or_404(data_store, session_id)
+        rt = SessionRuntime.hydrate(row)
+        as_of = rt.sim_time.isoformat() if rt.sim_time is not None else f"{row['start_date']}T09:30:00"
+        datasets = []
+        for d in (payload.get("datasets") or []):
+            d = dict(d)
+            if d.get("symbols") == "universe":
+                d["symbols"] = list(rt.universe)
+            datasets.append(d)
+        if not os.getenv("VORTEX_DATA_URL"):
+            raise HTTPException(status_code=503, detail={"error": "gateway_not_configured", "hint": "set VORTEX_DATA_URL"})
+        from .gateway_adapter import GatewayDataAdapter, GatewayDataError
         try:
-            job = normalize_job(_get_job_or_404(store, job_id))
-        except HTTPException:
-            return []
-        summary = job.get("summary") or {}
-        for strat in summary.get("strategies", []) or []:
-            if strat.get("strategy_id") == strategy_id:
-                return strat.get("daily", []) or []
-        return summary.get("daily", []) or []
-
-    def _strategy_entry(job_id: str, strategy_id: str) -> dict:
-        try:
-            job = normalize_job(_get_job_or_404(store, job_id))
-        except HTTPException:
-            return {}
-        for strat in (job.get("summary") or {}).get("strategies", []) or []:
-            if strat.get("strategy_id") == strategy_id:
-                return strat
-        return {}
-
-    def _equity_from_daily(daily: list[dict], benchmark: str | None) -> dict:
-        dates = [d["trade_date"] for d in daily]
-        eq = [float(d["total_value"]) for d in daily]
-        result: dict = {"dates": dates, "drawdown": [float(d.get("drawdown", 0.0)) for d in daily], "rebase": True}
-        result["equity"] = [round(v / eq[0], 6) for v in eq] if (eq and eq[0]) else eq  # 起点 1.0
-        result["baseline"] = 1.0
-        if benchmark:
-            series = benchmark_mod.benchmark_series(benchmark, dates, base=1.0)
-            result["benchmark"] = {"symbol": benchmark, "values": series, "available": series is not None}
-        return result
-
-    @app.get("/strategies")
-    def list_strategies(
-        data_store: DataStore = Depends(get_store),
-        account_id: str | None = Query(default=None),
-        best_metric: str = Query(default="total_return"),
-    ) -> list[dict]:
-        aggs = _aggregates(account_id, best_metric)
-        for agg in aggs:
-            agg.pop("runs", None)  # 列表页不带全部 run,详情页才带
-        return aggs
-
-    @app.get("/strategies/compare")
-    def compare_strategies(
-        ids: str = Query(...),
-        data_store: DataStore = Depends(get_store),
-        account_id: str | None = Query(default=None),
-        benchmark: str | None = Query(default=None),
-    ) -> dict:
-        wanted = [x.strip() for x in ids.split(",") if x.strip()]
-        by_id = {a["strategy_id"]: a for a in _aggregates(account_id, "total_return")}
-        out = []
-        for sid in wanted:
-            agg = by_id.get(sid)
-            if not agg:
-                continue
-            latest_done = next((r for r in agg["runs"] if r["status"] == "completed"), None)
-            entry = {"strategy_id": sid, "latest": agg["latest"], "best": agg["best"]}
-            if latest_done:
-                entry["equity"] = _equity_from_daily(_strategy_daily(latest_done["job_id"], sid), benchmark)
-            out.append(entry)
-        return {"strategies": out, "benchmark": benchmark}
-
-    @app.get("/leaderboard")
-    def get_leaderboard(
-        data_store: DataStore = Depends(get_store),
-        account_id: str | None = Query(default=None),
-        metric: str = Query(default="total_return"),
-        scope: str = Query(default="best"),
-        top: int = Query(default=20, ge=1, le=100),
-    ) -> list[dict]:
-        aggs = _aggregates(account_id, metric if metric in strat_mod.METRICS else "total_return")
-        return strat_mod.leaderboard(aggs, metric=metric, scope=scope, top=top)
-
-    @app.get("/strategies/{strategy_id}")
-    def get_strategy(
-        strategy_id: str,
-        data_store: DataStore = Depends(get_store),
-        account_id: str | None = Query(default=None),
-        best_metric: str = Query(default="total_return"),
-        benchmark: str | None = Query(default=None),
-    ) -> dict:
-        for agg in _aggregates(account_id, best_metric):
-            if agg["strategy_id"] == strategy_id:
-                latest_done = next((r for r in agg["runs"] if r["status"] == "completed"), None)
-                if latest_done:
-                    entry = _strategy_entry(latest_done["job_id"], strategy_id)
-                    daily = entry.get("daily") or _strategy_daily(latest_done["job_id"], strategy_id)
-                    agg["equity"] = _equity_from_daily(daily, benchmark)
-                    agg["positions"] = entry.get("positions", []) or []
-                    agg["trades"] = (entry.get("trades", []) or [])[-50:]
-                    agg["latest_job_id"] = latest_done["job_id"]
-                return agg
-        raise HTTPException(status_code=404, detail="strategy not found")
-
-    @app.put("/strategies/{strategy_id}/meta")
-    def put_strategy_meta(
-        strategy_id: str,
-        account_id: str = Query(...),
-        payload: dict | None = Body(default=None),
-        data_store: DataStore = Depends(get_store),
-        _auth: None = Depends(require_write_auth),
-    ) -> dict:
-        _get_account_or_404(data_store, account_id)
-        data = payload or {}
-        return data_store.set_strategy_meta(
-            account_id, strategy_id,
-            favorite=data.get("favorite"), pinned=data.get("pinned"), tags=data.get("tags"),
-        )
-
-    @app.get("/accounts/{account_id}/summary", response_model=AccountSummaryOut)
-    def get_latest_account_summary(
-        account_id: str,
-        data_store: DataStore = Depends(get_store),
-    ) -> dict:
-        _get_account_or_404(data_store, account_id)
-        try:
-            job = normalize_job(data_store.latest_completed_job(account_id))
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="completed backtest not found") from exc
-        return job["summary"]
-
-    @app.get("/accounts/{account_id}/positions", response_model=list[PositionOut])
-    def get_latest_positions(
-        account_id: str,
-        data_store: DataStore = Depends(get_store),
-    ) -> list[dict]:
-        summary = get_latest_account_summary(account_id, data_store)
-        return summary["positions"]
+            return GatewayDataAdapter()._query(as_of, datasets)
+        except GatewayDataError as exc:
+            raise HTTPException(status_code=502, detail={"error": "gateway_error", "detail": str(exc)}) from exc
 
     # 托管只读看板（P5 壳）：/ui/ 提供静态 SPA，/ 重定向到看板。
     web_dir = Path(__file__).resolve().parent / "web"
@@ -592,44 +401,6 @@ def _get_account_or_404(data_store: DataStore, account_id: str) -> dict:
         return data_store.get_account(account_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="account not found") from exc
-
-
-def _get_job_or_404(data_store: DataStore, job_id: str) -> dict:
-    try:
-        return data_store.get_job(job_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="backtest job not found") from exc
-
-
-def _completed_summary_or_404(data_store: DataStore, job_id: str) -> dict:
-    job = normalize_job(_get_job_or_404(data_store, job_id))
-    if job["status"] != "completed" or not job["summary"]:
-        raise HTTPException(status_code=404, detail="completed summary not found")
-    return job["summary"]
-
-
-def _read_minute_equity(summary: dict) -> list[dict]:
-    """读回测产物 minute_equity.csv → 逐分钟净值行（缺文件返回空）。"""
-    import csv
-
-    path = (summary.get("artifacts") or {}).get("minute_equity")
-    if not path or not Path(path).exists():
-        return []
-    rows: list[dict] = []
-    with open(path, newline="", encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            try:
-                rows.append(
-                    {
-                        "timestamp": r.get("timestamp"),
-                        "cash": float(r.get("cash") or 0.0),
-                        "market_value": float(r.get("market_value") or 0.0),
-                        "total_value": float(r.get("total_value") or 0.0),
-                    }
-                )
-            except (TypeError, ValueError):
-                continue
-    return rows
 
 
 app = create_app()
