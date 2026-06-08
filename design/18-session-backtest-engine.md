@@ -18,6 +18,14 @@
 > [`gateway_adapter.py`](../vortex_backtest/gateway_adapter.py)（`POST /api/v1/data`，**前复权PIT锚点**，缺字段降级），
 > `VORTEX_DATA_URL` 配则走网关、否则回退本地直读。金标 [`tests/test_golden_a_equals_b.py`](../tests/test_golden_a_equals_b.py)
 > 证明 A==B（逐笔成交/NAV/T+1拒单一致）。
+>
+> **N8（2026-06-08，已落地+测试）**：撮合/估值口径从 N5 前复权改为**真实账户(RAW 不复权 + 除权日显式公司行动)**——
+> 前复权已把分红吸进价，再入账=双计=错，故 RAW 替代之（前复权固定锚降级为金标 oracle，`price_mode="qfq"`）。
+> `gateway_adapter.load(price_mode="raw")` 撮合/估值用不复权价（`close_qfq==close`、multiplier=1）+ `load_dividends`
+> 取已实施分红（网关 effective_from 闸门）；`session_engine.apply_corporate_actions` 在 advance 的 (上一步,本步] 窗口
+> 按除权日入账：现金 `cash+=qty×cash_div_tax`、送转 `qty+=int(qty×stk_div)`（stk_div=送+转总比例，实证 ≡ bo+co）、
+> `cost_basis=旧总成本/新股数`。金标 [`tests/test_golden_raw_vs_qfq.py`](../tests/test_golden_raw_vs_qfq.py)：
+> RAW+入账 total return ≈ 前复权（纯拆股精确等价；现金分红残差=未再投二阶项）。data 侧 dividend 保留独立 ex_date 列配套。
 > 待办：删除旧 A 的 HTTP 面（/backtests/worker/jobs/A-only models）——已派发独立清理任务（replay_engine 作金标 oracle 保留）。
 
 ## 0. 一句话
@@ -284,7 +292,8 @@ body 直接转发 data 网关（见 §跨服务契约）：
 | `可见时间戳 ≤ as_of` 行级闸门（财报 ann_date、分钟 trade_time、成分生效区间…）| **data**（服务端强制、fail-closed）|
 | `as_of` 取自单调 `sim_time`、绝不前瞻 | **backtest**（会话时钟）|
 | 成交时点 next_bar（决策 t、成交 t+1）| **backtest**（fill_timing）|
-| 前复权 `price = close × adj_factor ÷ (≤as_of 最新因子)`（量级真实+PIT安全）| **data 交付 adj_factor** + **backtest 锚算** |
+| **撮合/估值价（N8 起）**：不复权 RAW（`close_qfq==close`）；分红送转按除权日入账 | **data 交付 RAW 行情 + dividend(含 ex_date)** + **backtest 入账** |
+| ~~前复权 `price = close × adj_factor ÷ (≤as_of 最新因子)`~~（N5，N8 起降级为金标 oracle `price_mode="qfq"`）| data 交付 adj_factor + backtest 锚算 |
 
 ### C3. 字段口径约定
 
@@ -300,8 +309,10 @@ body 直接转发 data 网关（见 §跨服务契约）：
    → data 侧把 dc_member 抓取改为按 date 落历史快照（data design/18 §8 P0）。
 2. ✅ **集合竞价 `visible_at`**：开盘 `date@09:25`、收盘 `date@15:00`。确认。
 3. ⏳ `op` 算子白名单第一版（rank/topN/filter/agg）——倾向够用，待实现时再收口。
-4. ✅ **复权口径**：**前复权 + PIT 锚点**（`close × adj_factor ÷ ≤as_of最新因子`）。自测实测后复权量级失真，改定此。
-   最新可见日 multiplier≈1（量级真实可现金结算），锚 ≤as_of 不含未来除权（PIT 安全）。
+4. ✅ **复权口径（N5→N8 演进）**：N5 前复权 + PIT 锚点（`close × adj_factor ÷ ≤as_of最新因子`）解决后复权量级失真，
+   作过渡口径。**N8 改定为真实账户(RAW 不复权 + 除权日显式公司行动)**：前复权已把分红吸进价，再入账=双计=错；
+   RAW 撮合/估值 + 分红送转按 ex_date 入账（现金/送转/成本）才与真实账户一致。前复权固定锚降级为金标 oracle
+   （`price_mode="qfq"`，证 RAW+入账 return ≈ 前复权）。送转用 `stk_div`（送+转总比例，实证 ≡ stk_bo_rate+stk_co_rate）。
 5. ⏳ **性能预判（先判断何时扛不住，扛不住再上）**：
    - 日频回测：1 步/日，几年也就几百~一千多次往返 → **毫无压力**。
    - 分钟级 + 事件/择时（每天动手几~几十次）：决策驱动推进（不需要的分钟 `to=next_day` 跳过）

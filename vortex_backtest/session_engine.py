@@ -254,6 +254,92 @@ def _match_due_at_bar(
     rt.open_orders = still_open
 
 
+def _to_float(value: Any) -> float:
+    try:
+        f = float(value)
+    except (ValueError, TypeError):
+        return 0.0
+    return 0.0 if f != f else f  # NaN → 0
+
+
+def _ex_timestamp(ex_date: Any) -> pd.Timestamp | None:
+    """yyyymmdd(int|str) → 当日 00:00 时间戳（除权日开始）。无法解析 → None。"""
+    try:
+        key = str(int(str(ex_date)[:8].replace("-", "")))
+    except (ValueError, TypeError):
+        return None
+    if len(key) != 8:
+        return None
+    try:
+        return pd.Timestamp(f"{key[:4]}-{key[4:6]}-{key[6:8]}")
+    except (ValueError, TypeError):
+        return None
+
+
+def apply_corporate_actions(
+    rt: SessionRuntime,
+    dividends: list[Mapping[str, Any]] | None,
+    *,
+    lower: pd.Timestamp | None,
+    upper: pd.Timestamp | None,
+) -> list[dict[str, Any]]:
+    """对 (lower, upper] 内除权的持仓 symbol 应用公司行动（design/18 N8 真实账户口径）。
+
+    - 现金分红：``cash += qty × cash_div_tax``
+    - 送转：    ``qty += int(qty × ratio)``，``ratio = stk_div``（送+转 总比例，实证 ≡ stk_bo_rate+stk_co_rate；
+      stk_div 缺/为 0 → 回退 stk_bo_rate+stk_co_rate）
+    - 成本：    ``cost_basis = 旧总成本 / 新股数``
+
+    按 ``ex_date`` 升序应用（现金/成本链式正确：后一笔用前一笔 split 后的股数），仅对当前持仓(quantity>0)。
+    替代前复权把分红吸进价——RAW 价在除权日跳变，由此处入账抵消。返回入账明细（供上下文/日志）。
+
+    注：估值刷新仍依赖除权日有 bar 驱动 ``last_prices``（日/分钟步进成立）；本函数只动 cash/quantity/cost_basis。
+    """
+    applied: list[dict[str, Any]] = []
+    if not dividends or upper is None:
+        return applied
+    upper = pd.Timestamp(upper)
+    lower = pd.Timestamp(lower) if lower is not None else None
+    items: list[tuple[pd.Timestamp, Mapping[str, Any]]] = []
+    for d in dividends:
+        ex_ts = _ex_timestamp(d.get("ex_date"))
+        if ex_ts is not None:
+            items.append((ex_ts, d))
+    items.sort(key=lambda x: x[0])
+    for ex_ts, d in items:
+        if lower is not None and ex_ts <= lower:
+            continue  # 已过窗口（前次 advance 已入账）
+        if ex_ts > upper:
+            continue  # 未到除权日
+        sym = normalize_symbol(str(d["symbol"]))
+        pos = rt.positions.get(sym)
+        if pos is None or pos.quantity <= 0:
+            continue  # 只对当前持仓入账
+        old_qty = pos.quantity
+        old_total_cost = old_qty * pos.cost_basis
+        cash_div = _to_float(d.get("cash_div_tax"))
+        ratio = _to_float(d.get("stk_div"))
+        if ratio <= 0:
+            ratio = _to_float(d.get("stk_bo_rate")) + _to_float(d.get("stk_co_rate"))
+        add_shares = int(old_qty * ratio)
+        new_qty = old_qty + add_shares
+        cash_added = old_qty * cash_div
+        rt.cash += cash_added
+        pos.quantity = new_qty
+        if new_qty > 0:
+            pos.cost_basis = old_total_cost / new_qty
+        applied.append({
+            "strategy_id": rt.strategy_id,
+            "symbol": sym,
+            "ex_date": int(ex_ts.strftime("%Y%m%d")),
+            "cash_dividend": round_money(cash_added),
+            "shares_added": add_shares,
+            "quantity": new_qty,
+            "cost_basis": pos.cost_basis,
+        })
+    return applied
+
+
 def advance(
     rt: SessionRuntime,
     bars: pd.DataFrame,
@@ -263,6 +349,7 @@ def advance(
     set_universe: list[str] | None = None,
     to: str | pd.Timestamp | None = None,
     cancel: list[str] | None = None,
+    dividends: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """推进一步：撤单 → 提交本步委托 → 撮合到期单 → 推进时钟到 ``to`` → 结算 → 回账户上下文。
 
@@ -273,6 +360,7 @@ def advance(
     to_ts = pd.Timestamp(to) if to is not None else (rt.sim_time)
     if rt.sim_time is not None and to_ts is not None and to_ts < rt.sim_time:
         raise ValueError(f"advance 时钟不单调：to={to_ts} < sim_time={rt.sim_time}")
+    entry_sim_time = rt.sim_time  # 本步窗口下界（除权日检测：(entry_sim_time, 新 sim_time]）
 
     # 撤单：从停泊队列移除未成交挂单（先于本步新单/撮合）
     rt.last_cancelled = []
@@ -330,7 +418,10 @@ def advance(
     # 时钟推进到 to（即便中间没有 bar，如越过无行情的时段/休市）
     if to_ts is not None and (rt.sim_time is None or to_ts > rt.sim_time):
         rt.sim_time = to_ts
-    return rt.account_context()
+
+    # 公司行动入账：检测 (entry_sim_time, 新 sim_time] 内持仓的除权日，应用现金/送转（N8）
+    corporate_actions = apply_corporate_actions(rt, dividends, lower=entry_sim_time, upper=rt.sim_time)
+    return {**rt.account_context(), "corporate_actions": corporate_actions}
 
 
 def finalize(rt: SessionRuntime, calendar: list[int]) -> dict[str, Any]:

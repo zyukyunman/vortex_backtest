@@ -1,4 +1,7 @@
-"""GatewayDataAdapter 测试（design/18 B4）：前复权 PIT 锚点 + 富 bar 装配，mock 网关响应。"""
+"""GatewayDataAdapter 前复权 oracle 测试（design/18 B4）：前复权 PIT 锚点 + 富 bar 装配，mock 网关响应。
+
+N8 起默认口径为不复权 RAW（见 test_gateway_adapter_raw.py）；前复权(``price_mode="qfq"``)保留为金标 oracle，
+本文件显式测该 oracle 路径。"""
 from __future__ import annotations
 
 from datetime import date
@@ -28,7 +31,7 @@ def test_qfq_anchor_realistic_magnitude(monkeypatch):
     adapter = GatewayDataAdapter(base_url="http://x")
     monkeypatch.setattr(adapter, "_query", lambda as_of, datasets: _gateway_response())
     ds = adapter.load(symbols={"600519.SH"}, start_date=date(2026, 5, 6), end_date=date(2026, 5, 6),
-                      as_of="2026-05-06T15:00:00")
+                      as_of="2026-05-06T15:00:00", price_mode="qfq")
     df = ds.minutes
     assert len(df) == 2
     row = df.iloc[0]
@@ -70,7 +73,7 @@ def test_qfq_anchor_scales_history(monkeypatch):
 
     monkeypatch.setattr(adapter, "_query", resp)
     df = adapter.load(symbols={"000001.SZ"}, start_date=date(2026, 5, 5), end_date=date(2026, 5, 6),
-                      as_of="2026-05-06T15:00:00").minutes.sort_values("date")
+                      as_of="2026-05-06T15:00:00", price_mode="qfq").minutes.sort_values("date")
     # 0505: mult=2/4=0.5 → 前复权 10×0.5=5（与 0506 的 5 连续）；0506: mult=1 → 5
     assert list(df["close_qfq"]) == [5.0, 5.0]
 
@@ -114,7 +117,7 @@ def _exdate_resp(as_of, datasets):
 def _qfq_0505(adapter, as_of, anchor):
     from datetime import date
     df = adapter.load(symbols={"600519.SH"}, start_date=date(2026, 5, 5), end_date=date(2026, 5, 6),
-                      as_of=as_of, anchor_date=anchor)
+                      as_of=as_of, anchor_date=anchor, price_mode="qfq")
     d = df.minutes
     return float(d[d["date"] == 20260505]["close_qfq"].iloc[0])
 

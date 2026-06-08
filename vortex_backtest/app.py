@@ -55,6 +55,22 @@ def _load_session_bars(symbols: list[str], start_d: date, end_d: date, as_of: st
     return ds.minutes, ds.calendar
 
 
+def _load_session_dividends(symbols, as_of: str | None):
+    """取持仓/股池的已实施分红（≤ as_of，网关 effective_from 闸门）供除权日入账（N8 真实账户口径）。
+
+    仅网关路（``VORTEX_DATA_URL`` 配置）生效；本地直读回退口径仍为前复权(N5)、不入账，返回 None。
+    缺数据/网关错 → None（优雅降级，不中断会话）。
+    """
+    if not symbols or not (os.getenv("VORTEX_DATA_URL") and as_of):
+        return None
+    from .gateway_adapter import GatewayDataAdapter, GatewayDataError
+
+    try:
+        return GatewayDataAdapter().load_dividends(symbols=set(str(s) for s in symbols), as_of=as_of)
+    except (ValueError, GatewayDataError):
+        return None
+
+
 def _append_jsonl(path: Path, rows: list) -> None:
     if not rows:
         return
@@ -253,13 +269,16 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         symbols = payload.get("set_universe") or rt.universe
         anchor_d = date.fromisoformat(str(row["start_date"])) if row.get("start_date") else from_d
         bars, _cal = _load_session_bars([str(s) for s in symbols], from_d, to_d, as_of=to_ts, anchor_d=anchor_d)
+        # N8：持仓∪股池的已实施分红 → 除权日入账（真实账户口径，替代前复权把分红吸进价）
+        div_symbols = set(str(s) for s in symbols) | set(rt.positions.keys())
+        dividends = _load_session_dividends(div_symbols, as_of=to_ts)
         rules = AShareRuleEngine()
         try:
             ctx = session_advance(
                 rt, bars, rules=rules,
                 orders=payload.get("orders") or [],
                 set_universe=payload.get("set_universe"), to=to_ts,
-                cancel=payload.get("cancel"),
+                cancel=payload.get("cancel"), dividends=dividends,
             )
         except ValueError as exc:  # 时钟不单调
             raise HTTPException(status_code=409, detail={"error": "non_monotonic_clock", "detail": str(exc)}) from exc
@@ -272,6 +291,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         _append_jsonl(sdir / "trades.jsonl", rt.trades)
         _append_jsonl(sdir / "rejections.jsonl", rt.rejections)
         _append_jsonl(sdir / "snapshots.jsonl", rt.snapshots)
+        _append_jsonl(sdir / "corporate_actions.jsonl", ctx.get("corporate_actions") or [])
         return {**ctx, "filled": rt.trades, "rejected": rt.rejections, "cancelled": rt.last_cancelled}
 
     @app.post("/sessions/{session_id}/close")

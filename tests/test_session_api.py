@@ -90,6 +90,39 @@ def test_session_lifecycle(client):
     assert r3.status_code == 409
 
 
+def test_advance_books_dividend_on_ex_date(tmp_path, monkeypatch):
+    """N8 端到端：持仓跨入除权日 → 现金分红入账，公司行动出现在返回与日志。"""
+    bars = pd.DataFrame([
+        _bar("600519.SH", "2026-05-06 09:30:00", 20260506, px=10.0),
+        _bar("600519.SH", "2026-05-07 09:30:00", 20260507, px=9.0),  # 除权后 RAW 跌
+    ])
+    monkeypatch.setattr(app_mod, "_load_session_bars",
+                        lambda symbols, start_d, end_d, as_of=None, anchor_d=None: (bars.copy(), [20260506, 20260507]))
+    monkeypatch.setattr(app_mod, "_load_session_dividends",
+                        lambda symbols, as_of: [{"symbol": "600519.SH", "ex_date": 20260507,
+                                                 "cash_div_tax": 1.0, "stk_div": 0.0,
+                                                 "stk_bo_rate": 0.0, "stk_co_rate": 0.0}])
+    client = TestClient(create_app(tmp_path, run_worker=False))
+    client.post("/accounts", json={"account_id": "a", "initial_cash": 1_000_000})
+    sid = client.post("/sessions", json={
+        "account_id": "a", "level": "1min", "start_date": "2026-05-06", "end_date": "2026-05-07",
+        "universe": ["600519.SH"], "fill_timing": "this_bar"}).json()["session_id"]
+
+    # D1 买 100，本步窗口不含除权日 → 不入账
+    r1 = client.post(f"/sessions/{sid}/advance", json={
+        "orders": [{"request_id": "o1", "symbol": "600519.SH", "side": 1, "quantity": 100, "exec_time": "09:30"}],
+        "to": "2026-05-06T09:30:00"}).json()
+    assert r1["positions"][0]["quantity"] == 100
+    assert not r1.get("corporate_actions")
+    cash_after_buy = r1["cash"]
+
+    # 推进到 D2（除权日）→ 现金分红 100×1 入账
+    r2 = client.post(f"/sessions/{sid}/advance", json={"to": "2026-05-07T09:30:00"}).json()
+    assert r2["corporate_actions"] and r2["corporate_actions"][0]["symbol"] == "600519.SH"
+    assert abs(r2["cash"] - (cash_after_buy + 100.0)) < 0.01
+    assert r2["positions"][0]["quantity"] == 100  # 现金分红不改股数
+
+
 def test_monotonic_clock_rejected(client):
     client.post("/accounts", json={"account_id": "a", "initial_cash": 1_000_000})
     sid = client.post("/sessions", json={
