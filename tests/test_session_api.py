@@ -99,7 +99,7 @@ def test_advance_books_dividend_on_ex_date(tmp_path, monkeypatch):
     monkeypatch.setattr(app_mod, "_load_session_bars",
                         lambda symbols, start_d, end_d, as_of=None, anchor_d=None: (bars.copy(), [20260506, 20260507]))
     monkeypatch.setattr(app_mod, "_load_session_dividends",
-                        lambda symbols, as_of: [{"symbol": "600519.SH", "ex_date": 20260507,
+                        lambda symbols, as_of, start_d=None: [{"symbol": "600519.SH", "ex_date": 20260507,
                                                  "cash_div_tax": 1.0, "stk_div": 0.0,
                                                  "stk_bo_rate": 0.0, "stk_co_rate": 0.0}])
     client = TestClient(create_app(tmp_path, run_worker=False))

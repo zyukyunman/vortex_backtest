@@ -55,18 +55,19 @@ def _load_session_bars(symbols: list[str], start_d: date, end_d: date, as_of: st
     return ds.minutes, ds.calendar
 
 
-def _load_session_dividends(symbols, as_of: str | None):
+def _load_session_dividends(symbols, as_of: str | None, start_d: date | None = None):
     """取持仓/股池的已实施分红（≤ as_of，网关 effective_from 闸门）供除权日入账（N8 真实账户口径）。
 
     仅网关路（``VORTEX_DATA_URL`` 配置）生效；本地直读回退口径仍为前复权(N5)、不入账，返回 None。
-    缺数据/网关错 → None（优雅降级，不中断会话）。
+    缺数据/网关错 → None（优雅降级，不中断会话）。``start_d`` 透传为窗口下界（N8-2，取回窗口内全部除权行）。
     """
     if not symbols or not (os.getenv("VORTEX_DATA_URL") and as_of):
         return None
     from .gateway_adapter import GatewayDataAdapter, GatewayDataError
 
     try:
-        return GatewayDataAdapter().load_dividends(symbols=set(str(s) for s in symbols), as_of=as_of)
+        return GatewayDataAdapter().load_dividends(
+            symbols=set(str(s) for s in symbols), as_of=as_of, start=start_d)
     except (ValueError, GatewayDataError):
         return None
 
@@ -265,13 +266,18 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         if not to_ts:
             raise HTTPException(status_code=400, detail={"error": "missing_to_or_end_date"})
         from_d = rt.sim_time.date() if rt.sim_time is not None else date.fromisoformat(str(row["start_date"]))
-        to_d = pd.Timestamp(to_ts).date()
-        symbols = payload.get("set_universe") or rt.universe
+        try:
+            to_d = pd.Timestamp(to_ts).date()  # CTR-1：畸形 to → 400 而非 500（与本端点其余客户端错一致）
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail={"error": "invalid_to", "detail": str(exc)}) from exc
+        # B2：持仓股即便被 set_universe 踢出股池，也须取 bar——否则该股估值陈旧且永远卖不掉(no_market_data)。
+        # sorted 去 set 迭代序的进程随机性（确定性）；网关侧亦会再排序。
+        symbols = sorted({str(s) for s in (payload.get("set_universe") or rt.universe)} | set(rt.positions.keys()))
         anchor_d = date.fromisoformat(str(row["start_date"])) if row.get("start_date") else from_d
-        bars, _cal = _load_session_bars([str(s) for s in symbols], from_d, to_d, as_of=to_ts, anchor_d=anchor_d)
-        # N8：持仓∪股池的已实施分红 → 除权日入账（真实账户口径，替代前复权把分红吸进价）
-        div_symbols = set(str(s) for s in symbols) | set(rt.positions.keys())
-        dividends = _load_session_dividends(div_symbols, as_of=to_ts)
+        bars, _cal = _load_session_bars(symbols, from_d, to_d, as_of=to_ts, anchor_d=anchor_d)
+        # N8：持仓∪股池的已实施分红 → 除权日入账（真实账户口径，替代前复权把分红吸进价）。
+        # start_d=from_d 给网关窗口下界（N8-2：取回窗口内全部除权行，不被 count=1 快照截成最近一笔）。
+        dividends = _load_session_dividends(set(symbols), as_of=to_ts, start_d=from_d)
         rules = AShareRuleEngine()
         try:
             ctx = session_advance(
@@ -292,6 +298,8 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         _append_jsonl(sdir / "rejections.jsonl", rt.rejections)
         _append_jsonl(sdir / "snapshots.jsonl", rt.snapshots)
         _append_jsonl(sdir / "corporate_actions.jsonl", ctx.get("corporate_actions") or [])
+        # B4：持久化本步取数的交易日历（含无 bar 的停牌/缺口日），供 close/summary 做连续日级 forward-fill。
+        _append_jsonl(sdir / "calendar.jsonl", [{"d": int(x)} for x in (_cal or [])])
         return {**ctx, "filled": rt.trades, "rejected": rt.rejections, "cancelled": rt.last_cancelled}
 
     @app.post("/sessions/{session_id}/close")
@@ -306,7 +314,9 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         rt.trades = _read_jsonl(sdir / "trades.jsonl")
         rt.rejections = _read_jsonl(sdir / "rejections.jsonl")
         rt.snapshots = _read_jsonl(sdir / "snapshots.jsonl")
-        calendar = sorted({int(s["timestamp"][:10].replace("-", "")) for s in rt.snapshots})
+        cal_days = {int(s["timestamp"][:10].replace("-", "")) for s in rt.snapshots}
+        cal_days |= {int(r["d"]) for r in _read_jsonl(sdir / "calendar.jsonl")}  # B4：含无 bar 的缺口/停牌日
+        calendar = sorted(cal_days)
         summary = session_finalize(rt, calendar)
         (sdir).mkdir(parents=True, exist_ok=True)
         (sdir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, default=str), encoding="utf-8")
@@ -326,7 +336,9 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         rt.trades = _read_jsonl(sdir / "trades.jsonl")
         rt.rejections = _read_jsonl(sdir / "rejections.jsonl")
         rt.snapshots = _read_jsonl(sdir / "snapshots.jsonl")
-        calendar = sorted({int(s["timestamp"][:10].replace("-", "")) for s in rt.snapshots})
+        cal_days = {int(s["timestamp"][:10].replace("-", "")) for s in rt.snapshots}
+        cal_days |= {int(r["d"]) for r in _read_jsonl(sdir / "calendar.jsonl")}  # B4：含无 bar 的缺口/停牌日
+        calendar = sorted(cal_days)
         return session_finalize(rt, calendar)
 
     @app.get("/sessions/{session_id}/summary")

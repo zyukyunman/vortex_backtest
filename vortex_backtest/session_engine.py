@@ -125,7 +125,7 @@ class SessionRuntime:
             "fill_timing": self.fill_timing,
             "default_price_type": self.default_price_type,
             "slippage_bps": self.slippage_bps,
-            "last_prices": self.last_prices,
+            "last_prices": dict(sorted(self.last_prices.items())),  # DET-1：序列化字节序与输入行序无关
             "current_date_key": self.current_date_key,
             "processed_advances": self.processed_advances[-200:],  # 保留近 200 个去重指纹
         }
@@ -226,7 +226,10 @@ def _match_due_at_bar(
         fill_price = float(row[f"{price_field}_qfq"])
         raw_fill_price = float(row[price_field])
         exec_price = fill_price * (1 + slip) if int(order["side"]) == int(Side.BUY) else fill_price * (1 - slip)
-        position = rt.positions.setdefault(symbol, Position())
+        # B3：拒单不留幻影零仓——校验/裁剪用暂存 Position，仅在成交在即时才落入 rt.positions。
+        position = rt.positions.get(symbol)
+        if position is None:
+            position = Position()
         reason = rules.validate_order(
             order=order, bar=row, cash=rt.cash,
             position_quantity=position.quantity, sellable_quantity=position.sellable_quantity,
@@ -243,6 +246,7 @@ def _match_due_at_bar(
         if qty <= 0:
             rt.rejections.append(rejection_row(strategy_id=rt.strategy_id, order=order, reason="volume_cap_below_lot"))
             continue
+        rt.positions[symbol] = position  # 成交在即，落入持仓表
         rt.trade_counter += 1
         trade, rt.cash = execute_order(
             strategy_id=rt.strategy_id, trade_number=rt.trade_counter, order=order,
@@ -282,45 +286,61 @@ def apply_corporate_actions(
     *,
     lower: pd.Timestamp | None,
     upper: pd.Timestamp | None,
+    only_date: int | None = None,
+    applied: set[tuple[str, int]] | None = None,
+    exclude_dates: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """对 (lower, upper] 内除权的持仓 symbol 应用公司行动（design/18 N8 真实账户口径）。
 
-    - 现金分红：``cash += qty × cash_div_tax``
+    - 现金分红：``cash += qty × cash_div_tax``（负值=脏数据，夹 0；N8-5）
     - 送转：    ``qty += int(qty × ratio)``，``ratio = stk_div``（送+转 总比例，实证 ≡ stk_bo_rate+stk_co_rate；
-      stk_div 缺/为 0 → 回退 stk_bo_rate+stk_co_rate）
+      stk_div 缺/为 0 → 回退 stk_bo_rate+stk_co_rate；负值夹 0，N8-5）
     - 成本：    ``cost_basis = 旧总成本 / 新股数``
 
-    按 ``ex_date`` 升序应用（现金/成本链式正确：后一笔用前一笔 split 后的股数），仅对当前持仓(quantity>0)。
-    替代前复权把分红吸进价——RAW 价在除权日跳变，由此处入账抵消。返回入账明细（供上下文/日志）。
+    按 ``(ex_date, symbol)`` 升序应用（DET-2：输出/落盘字节序与输入行序无关；现金/成本链式正确：
+    后一笔用前一笔 split 后的股数），仅对当前持仓(quantity>0)。``only_date`` 给定 → 只入账该除权日
+    （advance 逐日触发用）。``applied`` 给定 → 跨调用按 (symbol,ex_date) 去重，至多入账一次（N8-1 函数内幂等，
+    亦防 advance 内"逐日 + 收尾 sweep"双计）。替代前复权把分红吸进价——RAW 价在除权日跳变，由此处入账抵消。
 
-    注：估值刷新仍依赖除权日有 bar 驱动 ``last_prices``（日/分钟步进成立）；本函数只动 cash/quantity/cost_basis。
+    注：估值刷新仍依赖除权日有 bar 驱动 ``last_prices``；advance 把本函数提到除权日首个 bar 的快照之前
+    （见 advance 内调用），使拆股股数先就位再估值，避免幻影回撤（N8-3）。
     """
-    applied: list[dict[str, Any]] = []
+    applied_rows: list[dict[str, Any]] = []
     if not dividends or upper is None:
-        return applied
+        return applied_rows
     upper = pd.Timestamp(upper)
     lower = pd.Timestamp(lower) if lower is not None else None
+    seen = applied if applied is not None else set()
     items: list[tuple[pd.Timestamp, Mapping[str, Any]]] = []
     for d in dividends:
         ex_ts = _ex_timestamp(d.get("ex_date"))
         if ex_ts is not None:
             items.append((ex_ts, d))
-    items.sort(key=lambda x: x[0])
+    items.sort(key=lambda x: (x[0], normalize_symbol(str(x[1].get("symbol", "")))))
     for ex_ts, d in items:
         if lower is not None and ex_ts <= lower:
             continue  # 已过窗口（前次 advance 已入账）
         if ex_ts > upper:
             continue  # 未到除权日
+        ex_date_int = int(ex_ts.strftime("%Y%m%d"))
+        if only_date is not None and ex_date_int != only_date:
+            continue  # 只入账指定除权日（逐日触发）
+        if exclude_dates is not None and ex_date_int in exclude_dates:
+            continue  # 该除权日有 bar、已在逐日入账时做过 PIT 决策（按入场持仓）；收尾 sweep 不得二次入账
         sym = normalize_symbol(str(d["symbol"]))
+        key = (sym, ex_date_int)
+        if key in seen:
+            continue  # N8-1：同 (symbol,ex_date) 至多入账一次（函数内幂等）
         pos = rt.positions.get(sym)
         if pos is None or pos.quantity <= 0:
             continue  # 只对当前持仓入账
         old_qty = pos.quantity
         old_total_cost = old_qty * pos.cost_basis
-        cash_div = _to_float(d.get("cash_div_tax"))
+        cash_div = max(_to_float(d.get("cash_div_tax")), 0.0)  # N8-5：负现金分红夹 0
         ratio = _to_float(d.get("stk_div"))
         if ratio <= 0:
             ratio = _to_float(d.get("stk_bo_rate")) + _to_float(d.get("stk_co_rate"))
+        ratio = max(ratio, 0.0)  # N8-5：负送转比例夹 0（须在 bo+co 回退之后）
         add_shares = int(old_qty * ratio)
         new_qty = old_qty + add_shares
         cash_added = old_qty * cash_div
@@ -328,16 +348,17 @@ def apply_corporate_actions(
         pos.quantity = new_qty
         if new_qty > 0:
             pos.cost_basis = old_total_cost / new_qty
-        applied.append({
+        seen.add(key)
+        applied_rows.append({
             "strategy_id": rt.strategy_id,
             "symbol": sym,
-            "ex_date": int(ex_ts.strftime("%Y%m%d")),
+            "ex_date": ex_date_int,
             "cash_dividend": round_money(cash_added),
             "shares_added": add_shares,
             "quantity": new_qty,
             "cost_basis": pos.cost_basis,
         })
-    return applied
+    return applied_rows
 
 
 def advance(
@@ -391,6 +412,9 @@ def advance(
 
     # 逐 bar 推进：严格 (sim_time, to]，避免跨 advance 重复处理边界 bar；
     # 首步 sim_time 为 None 时含 frame 全部 ≤ to。
+    applied_div: set[tuple[str, int]] = set()  # 本步已入账的 (symbol,ex_date)，逐日与收尾 sweep 共享去重
+    processed_days: set[int] = set()  # 本步实际处理过 bar 的日键（收尾 sweep 据此排除，避免对有 bar 日二次入账）
+    corporate_actions: list[dict[str, Any]] = []
     if not bars.empty:
         lower = rt.sim_time
         for timestamp, rows in bars.groupby("trade_time", sort=True):
@@ -402,9 +426,16 @@ def advance(
             row_dicts = [r.to_dict() for _, r in rows.iterrows()]
             row_by_symbol = {str(r["symbol"]): r for r in row_dicts}
             row_date_key = int(row_dicts[0]["date"])
-            if rt.current_date_key != row_date_key:  # 跨日 → T+1 解锁
+            processed_days.add(row_date_key)
+            if rt.current_date_key != row_date_key:  # 跨日 → T+1 解锁 + 本日除权入账
                 unlock_positions(rt.positions)
                 rt.current_date_key = row_date_key
+                # N8-3/N8-4：本日除权入账提到本日首个 bar 的 last_prices/快照之前——拆股股数先就位
+                # 再用除权后 RAW 价估值（消除幻影回撤），且只对入场持仓入账（当日才建的仓不被回看补分红）。
+                corporate_actions += apply_corporate_actions(
+                    rt, dividends, lower=entry_sim_time, upper=ts,
+                    only_date=row_date_key, applied=applied_div,
+                )
             for sym, r in row_by_symbol.items():
                 rt.last_prices[sym] = float(r["close_qfq"])
             _match_due_at_bar(rt, rules, ts, row_by_symbol)
@@ -419,8 +450,21 @@ def advance(
     if to_ts is not None and (rt.sim_time is None or to_ts > rt.sim_time):
         rt.sim_time = to_ts
 
-    # 公司行动入账：检测 (entry_sim_time, 新 sim_time] 内持仓的除权日，应用现金/送转（N8）
-    corporate_actions = apply_corporate_actions(rt, dividends, lower=entry_sim_time, upper=rt.sim_time)
+    # B1：时钟跨日（即便该日无 bar，如停牌/缺口）也触发 T+1 解锁，避免持仓被双锁/漏解锁。
+    # 严格 ``to_key > current_date_key`` 防同日重解锁（盘内 to 保持日键不变 → 不解锁）。
+    if to_ts is not None:
+        to_key = int(to_ts.strftime("%Y%m%d"))
+        if rt.current_date_key is None or to_key > rt.current_date_key:
+            unlock_positions(rt.positions)
+            rt.current_date_key = to_key
+
+    # 收尾 sweep：(entry_sim_time, 新 sim_time] 内**未被 bar 日覆盖**的除权日（如除权日全天停牌无 bar），
+    # 按最终持仓入账（无 bar 即无快照，时点退化在所难免）。exclude_dates=processed_days 确保有 bar 的除权日
+    # 不被二次入账——其 PIT 决策已在逐日入账时按入场持仓做过（N8-4：建仓晚于除权日则当时持仓为 0，不补分红）。
+    corporate_actions += apply_corporate_actions(
+        rt, dividends, lower=entry_sim_time, upper=rt.sim_time,
+        applied=applied_div, exclude_dates=processed_days,
+    )
     return {**rt.account_context(), "corporate_actions": corporate_actions}
 
 

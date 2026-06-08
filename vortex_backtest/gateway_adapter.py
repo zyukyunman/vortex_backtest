@@ -50,12 +50,17 @@ class GatewayDataAdapter:
         if self.token:
             headers["X-API-Token"] = self.token
         # trust_env=False：服务对服务直连，绕过环境里的 HTTP(S)/SOCKS 代理（localhost 不该走代理）。
-        with httpx.Client(trust_env=False, timeout=self.timeout) as client:
-            resp = client.post(
-                f"{self.base_url}/api/v1/data",
-                json={"as_of": as_of, "datasets": datasets},
-                headers=headers,
-            )
+        try:
+            with httpx.Client(trust_env=False, timeout=self.timeout) as client:
+                resp = client.post(
+                    f"{self.base_url}/api/v1/data",
+                    json={"as_of": as_of, "datasets": datasets},
+                    headers=headers,
+                )
+        except httpx.HTTPError as exc:
+            # CTR-2：传输层错误（连接拒绝/超时/读超时等）归一为 GatewayDataError，
+            # 使 /data → 502、/advance → 优雅降级空帧（与文档承诺一致），而非裸 500。
+            raise GatewayDataError(f"gateway transport error: {exc}") from exc
         if resp.status_code != 200:
             raise GatewayDataError(f"gateway {resp.status_code}: {resp.text[:200]}")
         return resp.json()
@@ -159,25 +164,35 @@ class GatewayDataAdapter:
         enriched["volume"] = enriched.get("volume", 0)
         enriched["volume"] = enriched["volume"].fillna(0).astype(int)
         enriched = enriched.sort_values(["trade_time", "symbol"]).reset_index(drop=True)
-        calendar = sorted(int(x) for x in enriched["date"].unique())
+        # B4：交易日历并入 stk_limit 的日期——涨跌停带开盘前对全部在市标的公布(含停牌日)，覆盖连续交易日；
+        # 仅用分钟 bar 的 date 会漏掉全天停牌/无 bar 的交易日 → close/daily 的 forward-fill 丢该日。
+        cal_days = {int(x) for x in enriched["date"].unique()}
+        cal_days |= {int(x) for x in limits["date"].unique()}
+        calendar = sorted(cal_days)
         return TushareMinuteDataset(minutes=enriched, calendar=calendar)
 
     # ------------------------------------------------------------ dividends
 
-    def load_dividends(self, *, symbols: set[str], as_of: str) -> list[dict]:
+    def load_dividends(self, *, symbols: set[str], as_of: str, start: date | None = None) -> list[dict]:
         """取持仓 symbol 的已实施分红（≤ as_of，网关按 ``effective_from`` 闸门=已公告）。
 
         只返回**有 ex_date 的实施分红**（预案/方案 ex_date 空 → 未除权、不入账，自然滤除）。
         会话据此在 (上一步 sim_time, 本步 sim_time] 内除权日入账现金/送转（N8 真实账户口径）。
         回 ``[{symbol, ex_date(int yyyymmdd), cash_div_tax, stk_div, stk_bo_rate, stk_co_rate}, ...]``。
+
+        - **N8-2**：给定 ``start`` → 带 ``window.range`` 走网关 read_symbols，返回窗口内**全部**实施分红
+          （不再落 count=1 快照只回每 symbol 最近一笔，避免粗粒度 advance 跨多个除权日时丢早的）。
+          effective_from 闸门仍由网关强制（≤ as_of）。
+        - **DIVFIELD-1**：不显式点名 ``fields``——存量 dividend 落盘缺 ``ex_date`` 列时，点名缺列会被
+          storage 硬 raise KeyError→400（吞掉本应的优雅降级）。取回全列后按 ex_date 存在性判定，缺即 ``[]``。
         """
         syms = sorted({normalize_symbol(s) for s in symbols})
         if not syms:
             return []
-        result = self._query(as_of, [{
-            "dataset": "dividend", "symbols": syms,
-            "fields": ["symbol", "ex_date", "cash_div_tax", "stk_div", "stk_bo_rate", "stk_co_rate"],
-        }])
+        sub: dict = {"dataset": "dividend", "symbols": syms}
+        if start is not None:
+            sub["window"] = {"range": {"start": str(date_key(start))}}
+        result = self._query(as_of, [sub])
         df = normalize_columns(self._df(result, "dividend"))
         if df.empty or "ex_date" not in df.columns:
             return []
