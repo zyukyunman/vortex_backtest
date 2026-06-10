@@ -19,8 +19,7 @@ and the stable machine-readable error bodies, and we attack the corners:
   idempotency: same request_id -> duplicate no-op (no double advance/fill).
 
 Run:
-  /Users/zyukyunman/Documents/vortex/vortex_backtest/.venv/bin/python -m pytest \
-      tests/test_adv_contract_backtest.py -q
+  .venv/bin/python -m pytest tests/test_adv_contract_backtest.py -q
 
 Tests that EXPOSE a real defect are marked xfail(strict=False) so the file stays
 green; the failing assertion + traceback is the bug repro.

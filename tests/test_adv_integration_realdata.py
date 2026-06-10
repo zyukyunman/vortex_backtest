@@ -3,9 +3,9 @@
 These tests stand up BOTH services end-to-end:
 
 - vortex_data dashboard (stdlib http.server) launched as a SUBPROCESS using the
-  *data* venv against the REAL workspace
-  ``/Users/zyukyunman/Documents/vortex/vortex_data/workspace`` on port 8791,
-  with a known token via ``VORTEX_DATA_DASHBOARD_TOKEN``.
+  *data* venv against the REAL workspace (``$VORTEX_WORKSPACE``, default
+  ``~/vortex/workspace``) on port 8791, with a known token via
+  ``VORTEX_DATA_DASHBOARD_TOKEN``.
 - vortex_backtest driven in-process via ``TestClient(create_app(state_dir=tmp))``
   with ``VORTEX_DATA_URL`` pointing at the live data service.
 
@@ -26,8 +26,7 @@ A pure in-process fallback (no socket) is also included so the PIT-on-real-data
 and load_dividends contract assertions run even if the live server is flaky.
 
 Run (backtest venv):
-  /Users/zyukyunman/Documents/vortex/vortex_backtest/.venv/bin/python \
-      -m pytest tests/test_adv_integration_realdata.py -q
+  .venv/bin/python -m pytest tests/test_adv_integration_realdata.py -q
 """
 from __future__ import annotations
 
@@ -51,10 +50,24 @@ except ImportError:  # data venv: live-server tests will skip via the fixture
 
 # ---------------------------------------------------------------------------
 # Constants tied to the REAL workspace on disk (read-only).
+#
+# These point at a sibling vortex_data checkout + its real workspace. Both are
+# read from the environment (with home-relative defaults) so no one machine's
+# absolute path is baked in; the fixtures below pytest.skip when either is
+# absent. Override with VORTEX_DATA_REPO / VORTEX_WORKSPACE.
 # ---------------------------------------------------------------------------
-DATA_REPO = Path("/Users/zyukyunman/Documents/vortex/vortex_data")
+DATA_REPO = Path(
+    os.environ.get("VORTEX_DATA_REPO", os.path.expanduser("~/vortex/vortex_data"))
+)
 DATA_VENV_PY = DATA_REPO / ".venv" / "bin" / "python"
-REAL_WORKSPACE = DATA_REPO / "workspace"
+REAL_WORKSPACE = Path(
+    os.environ.get("VORTEX_WORKSPACE", os.path.expanduser("~/vortex/workspace"))
+)
+# Real-data tests run only when an explicit real workspace is provided via
+# $VORTEX_WORKSPACE (and it exists). Unset -> skip; never run against an
+# incidental home-default workspace.
+_HAS_REAL_WS = bool(os.environ.get("VORTEX_WORKSPACE")) and REAL_WORKSPACE.exists()
+_NO_REAL_WS_REASON = "需要真实 workspace（设 VORTEX_WORKSPACE 指向含 data/ 的工作区）"
 DATA_PORT = 8791
 DATA_TOKEN = "testtok_integ_8791"
 
@@ -105,8 +118,8 @@ def live_data_service():
         pytest.skip("fastapi not available (data venv): live-server tests need the backtest venv")
     if not DATA_VENV_PY.exists():
         pytest.skip(f"data venv missing: {DATA_VENV_PY}")
-    if not REAL_WORKSPACE.exists():
-        pytest.skip(f"real workspace missing: {REAL_WORKSPACE}")
+    if not _HAS_REAL_WS:
+        pytest.skip(_NO_REAL_WS_REASON)
     if not _port_free(DATA_PORT):
         pytest.skip(f"port {DATA_PORT} already in use")
 
@@ -420,8 +433,8 @@ def _query_service():
         pytest.skip("vortex_data / duckdb not importable in this venv")
     from vortex_data.service.query import QueryService
 
-    if not REAL_WORKSPACE.exists():
-        pytest.skip("real workspace missing")
+    if not _HAS_REAL_WS:
+        pytest.skip(_NO_REAL_WS_REASON)
     return QueryService(str(REAL_WORKSPACE))
 
 
