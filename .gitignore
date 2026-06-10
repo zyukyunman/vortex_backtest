@@ -7,6 +7,9 @@ __pycache__/
 .mypy_cache/
 .DS_Store
 
+# 本地配置(密钥层,不入库;模板见 .env.example)
+.env
+
 # 运行时状态(服务自动生成,不入库)
 state/
 .vortex_backtest/

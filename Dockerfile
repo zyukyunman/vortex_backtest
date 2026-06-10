@@ -15,7 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VORTEX_DATA_WORKSPACE=/workspace \
     VORTEX_BACKTEST_STATE_DIR=/state \
     VORTEX_BACKTEST_HOST=0.0.0.0 \
-    VORTEX_BACKTEST_PORT=8767 \
+    VORTEX_BACKTEST_PORT=8766 \
     TZ=Asia/Shanghai
 
 WORKDIR /app
@@ -30,6 +30,6 @@ RUN pip install --no-deps --no-build-isolation .
 
 # /workspace = 数据（来自 vortex_data，建议只读挂载）；/state = 账户/订单/作业/报告
 VOLUME ["/workspace", "/state"]
-EXPOSE 8767
+EXPOSE 8766
 
 CMD ["vortex-backtest", "serve"]

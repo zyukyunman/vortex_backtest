@@ -11,24 +11,24 @@ services:
     environment:
       VORTEX_WORKSPACE: /workspace            # 标准名，容器内固定（ADR-002）
       VORTEX_STATE: /state                    # 标准名，容器内固定（ADR-002）
-      VORTEX_BACKTEST_HOST: ${VORTEX_BACKTEST_HOST:-0.0.0.0}
-      VORTEX_BACKTEST_PORT: ${VORTEX_BACKTEST_PORT:-8767}
-      TZ: ${TZ:-Asia/Shanghai}
+      VORTEX_BACKTEST_HOST: 0.0.0.0           # 容器内固定绑全网卡；对外可达由 ports 的 BIND_ADDR 控制
+      VORTEX_BACKTEST_PORT: ${VORTEX_BACKTEST_PORT:?run via 'vortex run up backtest'}
+      TZ: ${TZ:?run via 'vortex run up backtest'}
       # 写接口 token（建账户/下单/提交回测）。token 守卫为 design/03 阶段6 待实现；
       # 在此之前靠默认只绑回环保证安全。
       VORTEX_BACKTEST_TOKEN: ${VORTEX_BACKTEST_TOKEN:-}
     ports:
       # 默认只绑宿主机回环（仅本机可访问）。要对外暴露：把 BIND_ADDR 设为 0.0.0.0，并先实现+配置 token。
-      - "${VORTEX_BACKTEST_BIND_ADDR:-127.0.0.1}:${VORTEX_BACKTEST_PUBLIC_PORT:-8767}:${VORTEX_BACKTEST_PORT:-8767}"
+      - "${VORTEX_BACKTEST_BIND_ADDR:?run via 'vortex run up backtest'}:${VORTEX_BACKTEST_PORT}:${VORTEX_BACKTEST_PORT}"
     volumes:
-      # 数据来自 vortex_data 的导出，只读挂载；整合部署时换成共享 named volume
-      - ${VORTEX_WORKSPACE_MOUNT:-../vortex_data/workspace}:/workspace:ro
-      - ${VORTEX_STATE_MOUNT:-./state}:/state
+      # 数据来自 vortex_data 的导出，只读挂载；状态目录可写。宿主机根由 vortex run 注入。
+      - ${VORTEX_WORKSPACE_HOST_ROOT:?run via 'vortex run up backtest'}:/workspace:ro
+      - ${VORTEX_STATE_HOST_ROOT:?run via 'vortex run up backtest'}:/state
     restart: unless-stopped
     healthcheck:
       test:
         - CMD-SHELL
-        - python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.getenv('VORTEX_BACKTEST_PORT','8767'), timeout=3).read()"
+        - python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.getenv('VORTEX_BACKTEST_PORT','8766'), timeout=3).read()"
       interval: 30s
       timeout: 5s
       retries: 3
