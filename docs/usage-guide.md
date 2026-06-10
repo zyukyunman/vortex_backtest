@@ -25,13 +25,13 @@ status: guide
 需要 Python 3.12 / 3.13（代码用了 3.11+ 的 `enum.StrEnum`，3.9/3.10 会报 `cannot import name 'StrEnum'`）。
 
 ```bash
-cd /Users/zyukyunman/Documents/vortex/vortex_backtest
-/opt/homebrew/bin/python3.13 -m venv .venv          # 或 python3.12
+cd $REPO            # 本仓根目录
+python3.13 -m venv .venv          # 或 python3.12
 .venv/bin/python -m pip install -e '.[dev]'
 
-export VORTEX_DATA_WORKSPACE=/path/to/vortex_workspace   # 含 data/stk_mins 的目录
-.venv/bin/vortex-backtest serve --port 8767 &            # 起服务
-curl http://127.0.0.1:8767/health                        # {"status":"ok"}
+export VORTEX_WORKSPACE=$WS          # vortex_data 导出的 workspace 根（含 data/stk_mins）
+.venv/bin/vortex-backtest serve --port 8766 &            # 起服务
+curl http://127.0.0.1:8766/health                        # {"status":"ok"}
 ```
 
 一条龙（用命令行客户端，`--wait` 已封装“提交+轮询”）：
@@ -47,24 +47,25 @@ curl http://127.0.0.1:8767/health                        # {"status":"ok"}
 
 ## 3. 部署与环境变量
 
-两种跑法：本地 venv（开发/测试）与 Docker（部署）。Docker 一键：
+两种跑法：本地 venv（开发/测试）与容器（部署）。容器一键：
 
 ```bash
-cp .env.example .env          # 改 VORTEX_BACKTEST_WORKSPACE 指向数据目录
-docker compose up -d --build
-curl http://127.0.0.1:8767/health
+vortex run up backtest                 # 起服务（端口 8766）
+curl http://127.0.0.1:8766/health
 ```
+
+宿主机挂载默认 `~/vortex/{workspace,state}`，可用 `VORTEX_*_HOST_ROOT` 覆盖；全栈用 `vortex run deploy`。端口规范以 vortex_common 的 `config/registry.yml` + ADR-003 为准。
 
 关键环境变量：
 
 | 变量 | 作用 | 默认 |
 |---|---|---|
-| `VORTEX_DATA_WORKSPACE` | 数据根目录（其下需有 `data/stk_mins` 等） | `/Users/zyukyunman/Documents/vortex_workspace` |
-| `VORTEX_BACKTEST_STATE_DIR` | 账户/订单/作业/报告的状态目录（SQLite + 报告文件） | `./.vortex_backtest` |
+| `VORTEX_WORKSPACE` | 数据根目录（其下需有 `data/stk_mins` 等） | vortex_data 导出的 workspace 根（`$WS`） |
+| `VORTEX_STATE` | 账户/订单/作业/报告的状态目录（SQLite + 报告文件） | `./.vortex_backtest` |
 | `VORTEX_BACKTEST_HOST` | 服务绑定地址 | `127.0.0.1` |
-| `VORTEX_BACKTEST_PORT` | 服务端口 | `8767` |
+| `VORTEX_BACKTEST_PORT` | 服务端口 | `8766` |
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权 token（见 §5） | 空 |
-| `VORTEX_BACKTEST_BASE_URL` | **命令行客户端**连接的服务地址 | `http://127.0.0.1:8767` |
+| `VORTEX_BACKTEST_BASE_URL` | **命令行客户端**连接的服务地址 | `http://127.0.0.1:8766` |
 
 默认只绑回环（仅本机可访问）。要对外暴露，务必同时配置 `VORTEX_BACKTEST_TOKEN`，并通过环境变量（而非 `serve --host` 旗标）设置 `VORTEX_BACKTEST_HOST=0.0.0.0`（原因见 `code-review-findings.md` #4）。
 
@@ -92,7 +93,7 @@ qfq 基准锚定**该标的全历史最新**复权因子，绝对价位不随回
 - 未配 token：仅本机回环放行；绑到非回环 host 时写接口直接 `403`（fail-closed）。
 
 ```bash
-curl -X POST http://127.0.0.1:8767/accounts \
+curl -X POST http://127.0.0.1:8766/accounts \
   -H 'Authorization: Bearer s3cret' -H 'Content-Type: application/json' \
   -d '{"account_id":"demo","initial_cash":100000}'
 ```
@@ -114,7 +115,7 @@ curl -X POST http://127.0.0.1:8767/accounts \
 ### 7.1 建账户
 
 ```bash
-curl -X POST http://127.0.0.1:8767/accounts \
+curl -X POST http://127.0.0.1:8766/accounts \
   -H 'Content-Type: application/json' \
   -d '{"account_id":"demo","initial_cash":100000}'        # → 201
 ```
@@ -124,7 +125,7 @@ curl -X POST http://127.0.0.1:8767/accounts \
 `side`：`1`=买、`2`=卖（必须是数值，布尔/字符串/越界 → `422`）。`limit_price` 是**真实价**，可选；`price_type` 可选 `open`/`close`（缺省用回测的 `default_price_type`，默认 `close`）。
 
 ```bash
-curl -X POST http://127.0.0.1:8767/accounts/demo/orders \
+curl -X POST http://127.0.0.1:8766/accounts/demo/orders \
   -H 'Content-Type: application/json' \
   -d '{"order_batch_id":"b1","request_id":"buy-1","trade_date":"2026-01-02",
        "symbol":"000001.SZ","side":1,"quantity":100,"limit_price":10.50}'   # → 201
@@ -133,13 +134,13 @@ curl -X POST http://127.0.0.1:8767/accounts/demo/orders \
 查订单（支持 `?order_batch_id=&start_date=&end_date=` 过滤）：
 
 ```bash
-curl 'http://127.0.0.1:8767/accounts/demo/orders?order_batch_id=b1'
+curl 'http://127.0.0.1:8766/accounts/demo/orders?order_batch_id=b1'
 ```
 
 ### 7.3 提交回测（异步）
 
 ```bash
-curl -X POST http://127.0.0.1:8767/backtests \
+curl -X POST http://127.0.0.1:8766/backtests \
   -H 'Content-Type: application/json' \
   -d '{"account_id":"demo","frequency":"1min","price_adjustment":"qfq",
        "default_price_type":"close","start_date":"2026-01-02","end_date":"2026-01-05",
@@ -151,7 +152,7 @@ curl -X POST http://127.0.0.1:8767/backtests \
 ### 7.4 轮询作业到完成
 
 ```bash
-curl http://127.0.0.1:8767/backtests/<job_id>               # status: queued→running→completed
+curl http://127.0.0.1:8766/backtests/<job_id>               # status: queued→running→completed
 ```
 
 终态 ∈ `{completed, failed, cancelled, interrupted}`。`failed` 时 `summary.error` 给安全错误码（见 §11）。
@@ -159,18 +160,18 @@ curl http://127.0.0.1:8767/backtests/<job_id>               # status: queued→r
 ### 7.5 取报告（日级）
 
 ```bash
-curl http://127.0.0.1:8767/backtests/<job_id>/summary             # 账户汇总 + 各策略 + 日级
-curl http://127.0.0.1:8767/backtests/<job_id>/daily               # 每日净值/持仓/成交/拒单
-curl http://127.0.0.1:8767/backtests/<job_id>/daily/2026-01-02    # 指定交易日
-curl 'http://127.0.0.1:8767/backtests/<job_id>/trades?trade_date=2026-01-02'
-curl 'http://127.0.0.1:8767/backtests/<job_id>/rejections?trade_date=2026-01-02'
+curl http://127.0.0.1:8766/backtests/<job_id>/summary             # 账户汇总 + 各策略 + 日级
+curl http://127.0.0.1:8766/backtests/<job_id>/daily               # 每日净值/持仓/成交/拒单
+curl http://127.0.0.1:8766/backtests/<job_id>/daily/2026-01-02    # 指定交易日
+curl 'http://127.0.0.1:8766/backtests/<job_id>/trades?trade_date=2026-01-02'
+curl 'http://127.0.0.1:8766/backtests/<job_id>/rejections?trade_date=2026-01-02'
 ```
 
 也可查账户最近一次完成的回测：
 
 ```bash
-curl http://127.0.0.1:8767/accounts/demo/summary
-curl http://127.0.0.1:8767/accounts/demo/positions
+curl http://127.0.0.1:8766/accounts/demo/summary
+curl http://127.0.0.1:8766/accounts/demo/positions
 ```
 
 ### 7.6 端点一览
@@ -266,7 +267,7 @@ vortex-backtest symbol 000001.SZ
 
 **成交价用哪根 bar？** 由 `price_type`/`default_price_type` 决定：`open` 用当日首分钟、`close` 用当日末分钟；成交价是该 bar 的 **qfq** 价。
 
-**回测 `minute_data_missing`？** `VORTEX_DATA_WORKSPACE` 下缺 `data/stk_mins`，用 `vortex_data` 先补分钟数据。
+**回测 `minute_data_missing`？** `VORTEX_WORKSPACE` 下缺 `data/stk_mins`，用 `vortex_data` 先补分钟数据。
 
 ## 13. 已知限制
 

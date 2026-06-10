@@ -7,6 +7,8 @@ status: review
 
 # 代码评审问题报告
 
+> 注：配置/端口以 vortex_common ADR-003 + config/registry.yml 为准（本文为历史记录）。
+
 > **2026-06-07 更新**：本报告成文于 design/15 修复前。其后 design/14（删 Qlib）+ design/15（引擎正名 `replay` + 修复）已落地，状态变更如下——
 > 模块更名：`backtrader_adapter` → **`replay_engine`**；`qlib_engine` 已删除（引擎只剩自研 `replay`）。
 > **已解决**：#1（滑点现金校验，commit 948205c）、#2（多策略日级聚合，commit 87cdeb5）、#3（部分成交透明度，commit 24e3e87 增 `requested_quantity`）、#7（Qlib 移除，`engine="qlib"` 归一为 `replay`，不再 import pyqlib）。#5 与 #2 同源，随 #2 修复（建议复测确认）。

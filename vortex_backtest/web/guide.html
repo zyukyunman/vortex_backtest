@@ -204,7 +204,7 @@ td code,th code{white-space:nowrap}
 
       <section id="design-data" class="section">
         <h3>1.3 数据流与数据集</h3>
-        <p>数据单向流动:<code>vortex_data 抓取/导出 → workspace(parquet)→ vortex_backtest 只读消费</code>。服务读 <code>$VORTEX_DATA_WORKSPACE/data</code> 下的数据集:</p>
+        <p>数据单向流动:<code>vortex_data 抓取/导出 → workspace(parquet)→ vortex_backtest 只读消费</code>。服务读 <code>$VORTEX_WORKSPACE/data</code> 下的数据集:</p>
         <div class="tablewrap"><table>
           <thead><tr><th>数据集</th><th>用途</th><th>缺失</th></tr></thead>
           <tbody>
@@ -281,7 +281,7 @@ td code,th code{white-space:nowrap}
       <!-- ============ 模块二:HTTP 接口协议 ============ -->
       <section id="api-principles" class="section">
         <h2><span class="n">2</span>HTTP 接口协议</h2>
-        <p>对外是 REST/JSON over HTTP,这是<strong>唯一</strong>的业务接入方式 —— 建账户、下单、提交回测、轮询、取报告全部走 HTTP,命令行只剩 <code>serve</code>(起服务)。Base URL:容器内 <code>http://0.0.0.0:8767</code>,本机默认 <code>http://127.0.0.1:8767</code>。在线可交互:<a href="/docs">/docs</a>(Swagger)、<a href="/redoc">/redoc</a>、<code>/openapi.json</code>。</p>
+        <p>对外是 REST/JSON over HTTP,这是<strong>唯一</strong>的业务接入方式 —— 建账户、下单、提交回测、轮询、取报告全部走 HTTP,命令行只剩 <code>serve</code>(起服务)。Base URL:容器内 <code>http://0.0.0.0:8766</code>,本机默认 <code>http://127.0.0.1:8766</code>。在线可交互:<a href="/docs">/docs</a>(Swagger)、<a href="/redoc">/redoc</a>、<code>/openapi.json</code>。</p>
         <h3>2.1 设计原则</h3>
         <ul>
           <li><strong>纯 HTTP,无 CLI 协议客户端</strong> —— 业务全走接口,易于被 k8s/其它服务编排。</li>
@@ -301,7 +301,7 @@ td code,th code{white-space:nowrap}
           <div class="step"><h4>关闭 = 轮询到终态</h4><div class="ep"><span class="method m-get">GET</span> /backtests/{job_id} 反复轮询</div></div>
           <div class="step"><h4>输出报告</h4><div class="ep"><span class="method m-get">GET</span> /backtests/{job_id}/summary | /daily | /trades | /rejections</div></div>
         </div>
-        <div class="codewrap"><span class="lang">bash</span><pre><code>B=http://127.0.0.1:8767
+        <div class="codewrap"><span class="lang">bash</span><pre><code>B=http://127.0.0.1:8766
 
 # ① 建账户
 curl -s -XPOST $B/accounts -H 'Content-Type: application/json' \
@@ -522,25 +522,25 @@ curl -s $B/backtests/$JOB/summary</code></pre></div>
       <!-- ============ 模块三:环境部署 ============ -->
       <section id="deploy-modes" class="section">
         <h2><span class="n">3</span>环境部署</h2>
-        <p>两种跑法:<strong>本地 venv</strong>(开发 / 跑测试)与 <strong>Docker 镜像</strong>(部署 / 起服务)。镜像里<strong>只启动服务</strong>。只想用镜像起服务的话直接看 3.3。规范端口 <strong>8767</strong>(避开 vortex_data 的 8765)。</p>
+        <p>两种跑法:<strong>本地 venv</strong>(开发 / 跑测试)与 <strong>Docker 镜像</strong>(部署 / 起服务)。镜像里<strong>只启动服务</strong>。只想用镜像起服务的话直接看 3.3。规范端口 <strong>8766</strong>(避开 vortex_data 的 8765;端口规范以 vortex_common 的 <code>config/registry.yml</code> + ADR-003 为准)。</p>
         <div class="callout warn"><span class="ic">⚠️</span><p>代码用了 3.11+ 的 <code>enum.StrEnum</code> —— 必须 <strong>Python 3.12 / 3.13</strong>;系统自带 3.9/3.10 会报 <code>cannot import name 'StrEnum'</code>。</p></div>
       </section>
 
       <section id="deploy-local" class="section">
         <h3>3.1 本地 venv(开发 / 测试)</h3>
-        <div class="codewrap"><span class="lang">bash</span><pre><code>cd /path/to/vortex_backtest
+        <div class="codewrap"><span class="lang">bash</span><pre><code>cd $REPO            # 本仓根目录
 python3.13 -m venv .venv            # 或 python3.12
 .venv/bin/python -m pip install -U pip
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -q       # 跑测试
 
 # 指向行情数据(loader 自动接 /data)
-export VORTEX_DATA_WORKSPACE=/path/to/vortex_data/workspace
-export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily   # 基准曲线,可选
+export VORTEX_WORKSPACE=$WS          # vortex_data 导出的 workspace 根
+export VORTEX_INDEX_DATA_DIR=$VORTEX_WORKSPACE/data/index_daily   # 基准曲线,可选
 
-# 起服务(命令行只剩 serve;默认 127.0.0.1:8767)
-.venv/bin/vortex-backtest serve --port 8767
-curl http://127.0.0.1:8767/health   # {"status":"ok"}</code></pre></div>
+# 起服务(命令行只剩 serve;默认 127.0.0.1:8766)
+.venv/bin/vortex-backtest serve --port 8766
+curl http://127.0.0.1:8766/health   # {"status":"ok"}</code></pre></div>
         <p>起好后:看板 <a href="/ui/">/ui/</a> · 交互式 API <a href="/docs">/docs</a> · 本文档 <code>/guide</code>。回测调用见 2.2(脚本或 curl)。</p>
       </section>
 
@@ -549,23 +549,14 @@ curl http://127.0.0.1:8767/health   # {"status":"ok"}</code></pre></div>
         <p>应用镜像 <code>FROM vortex-base</code>(统一依赖底座,由 vortex_common 构建),只叠本仓代码(<code>pip install --no-deps</code>),改代码秒级重建。<strong>前提:基础镜像 <code>vortex-base:latest</code> 必须已存在</strong>:</p>
         <div class="codewrap"><span class="lang">bash</span><pre><code>(cd ../vortex_common && scripts/build-base-image.sh)   # 仅首次 / base 变更时
 
-cd /path/to/vortex_backtest
-cp .env.example .env                # 改 VORTEX_BACKTEST_WORKSPACE 指向你的数据目录
-docker compose up -d --build        # 构建本仓代码并起服务(端口默认 8767)
-curl http://127.0.0.1:8767/health   # {"status":"ok"}
-docker compose logs -f              # 看日志
-docker compose down                 # 停服务</code></pre></div>
+vortex run up backtest              # 起服务(端口 8766;镜像缺失会自动构建)
+curl http://127.0.0.1:8766/health   # {"status":"ok"}
+vortex run logs backtest            # 看日志
+vortex run down backtest            # 停服务</code></pre></div>
         <ul>
-          <li><strong>卷</strong>:<code>/workspace</code> = 数据(默认<strong>只读</strong>挂载,来自 <code>VORTEX_BACKTEST_WORKSPACE</code>);<code>/state</code> = 账户 / 订单 / 作业 / 报告(可写)。</li>
-          <li><strong>端口</strong>:默认只绑 <code>127.0.0.1:8767</code>(仅本机)。要对外暴露:<code>.env</code> 设 <code>VORTEX_BACKTEST_BIND_ADDR=0.0.0.0</code>,并<strong>先配</strong> <code>VORTEX_BACKTEST_TOKEN</code>(写接口鉴权)。</li>
+          <li><strong>卷</strong>:<code>/workspace</code> = 数据(默认<strong>只读</strong>挂载,vortex_data 导出);<code>/state</code> = 账户 / 订单 / 作业 / 报告(可写)。宿主机挂载路径由 <code>vortex run up backtest</code> 自动用 <code>~/vortex/{workspace,state}</code>,可用 <code>VORTEX_*_HOST_ROOT</code> 覆盖。</li>
+          <li><strong>端口</strong>:默认只绑 <code>127.0.0.1:8766</code>(仅本机,内外一致)。要对外暴露:把 <code>VORTEX_BACKTEST_BIND_ADDR</code> 设为 <code>0.0.0.0</code> 并用 <code>vortex run up backtest</code> 启动,并<strong>先配</strong> <code>VORTEX_BACKTEST_TOKEN</code>(写接口鉴权)。</li>
         </ul>
-        <p>不用 compose 的等价命令:</p>
-        <div class="codewrap"><span class="lang">bash</span><pre><code>docker build --build-arg BASE_IMAGE=vortex-base:latest -t vortex-backtest:latest .
-docker run -d --name vortex-backtest \
-  -p 127.0.0.1:8767:8767 \
-  -v /path/to/workspace:/workspace:ro \
-  -v "$(pwd)/state:/state" \
-  vortex-backtest:latest</code></pre></div>
       </section>
 
       <section id="deploy-k8s" class="section">
@@ -574,15 +565,15 @@ docker run -d --name vortex-backtest \
         <div class="codewrap"><span class="lang">bash</span><pre><code># 在 vortex_common:按 deploy/versions.yml 各仓 tag 造组合镜像
 deploy/build-release.sh
 # 每服务一容器(同一镜像 + 不同 command: vortexctl &lt;svc&gt;)
-docker compose -f deploy/docker-compose.yml up -d</code></pre></div>
-        <p><strong>启动契约</strong>:common 的 <code>vortexctl backtest</code> 优先执行本仓 <code>deploy/run.sh</code>(自描述如何起自己),缺失则回退内置默认 <code>vortex-backtest serve</code>。<strong>规范端口</strong>(容器内):</p>
+vortex run deploy</code></pre></div>
+        <p><strong>启动契约</strong>:common 的 <code>vortexctl backtest</code> 优先执行本仓 <code>deploy/run.sh</code>(自描述如何起自己),缺失则回退内置默认 <code>vortex-backtest serve</code>。<strong>规范端口</strong>(内外一致,权威来源 vortex_common 的 <code>config/registry.yml</code> + ADR-003):</p>
         <div class="tablewrap"><table>
           <thead><tr><th>服务</th><th>端口</th><th>命名卷</th></tr></thead>
           <tbody>
             <tr><td>vortex_data</td><td>8765</td><td>vortex-workspace(读写)</td></tr>
-            <tr><td>vortex_qmt</td><td>8810</td><td>vortex-qmt-state</td></tr>
-            <tr><td><strong>vortex_backtest</strong></td><td><strong>8767</strong></td><td>vortex-workspace(只读)+ vortex-backtest-state</td></tr>
-            <tr><td>vortex_trader(预留)</td><td>8820</td><td>vortex-trader-state</td></tr>
+            <tr><td><strong>vortex_backtest</strong></td><td><strong>8766</strong></td><td>vortex-workspace(只读)+ vortex-backtest-state</td></tr>
+            <tr><td>vortex_qmt</td><td>8767</td><td>vortex-qmt-state</td></tr>
+            <tr><td>vortex_trader(预留)</td><td>8768</td><td>vortex-trader-state</td></tr>
           </tbody>
         </table></div>
         <p>升级 k8s:每个 compose 服务 → 一个 Deployment(同镜像换 <code>command</code>)。镜像内非 root 用户 <code>vortex</code>(uid 1000)+ 命名卷规避 bind-mount uid 错配。</p>
@@ -593,12 +584,12 @@ docker compose -f deploy/docker-compose.yml up -d</code></pre></div>
         <div class="tablewrap"><table>
           <thead><tr><th>变量</th><th>作用</th><th>默认 / 示例</th></tr></thead>
           <tbody>
-            <tr><td><code>VORTEX_DATA_WORKSPACE</code></td><td>行情 workspace 根(自动接 <code>/data</code>)</td><td>—(漏配回测报 <code>minute_data_missing</code>)</td></tr>
-            <tr><td><code>VORTEX_INDEX_DATA_DIR</code></td><td>指数基准目录</td><td><code>$WORKSPACE/data/index_daily</code></td></tr>
-            <tr><td><code>VORTEX_BACKTEST_HOST</code> / <code>PORT</code></td><td>服务监听地址</td><td><code>127.0.0.1</code> / <code>8767</code></td></tr>
-            <tr><td><code>VORTEX_BACKTEST_STATE_DIR</code></td><td>状态库目录(账户/作业/报告)</td><td>容器内 <code>/state</code></td></tr>
+            <tr><td><code>VORTEX_WORKSPACE</code></td><td>行情 workspace 根(自动接 <code>/data</code>)</td><td>—(漏配回测报 <code>minute_data_missing</code>)</td></tr>
+            <tr><td><code>VORTEX_INDEX_DATA_DIR</code></td><td>指数基准目录</td><td><code>$VORTEX_WORKSPACE/data/index_daily</code></td></tr>
+            <tr><td><code>VORTEX_BACKTEST_HOST</code> / <code>PORT</code></td><td>服务监听地址</td><td><code>127.0.0.1</code> / <code>8766</code></td></tr>
+            <tr><td><code>VORTEX_STATE</code></td><td>状态库目录(账户/作业/报告)</td><td>容器内 <code>/state</code></td></tr>
             <tr><td><code>VORTEX_BACKTEST_TOKEN</code></td><td>写接口鉴权(非回环必配)</td><td>空</td></tr>
-            <tr><td><code>BASE_URL</code></td><td>开闭环脚本默认连的服务地址</td><td><code>http://127.0.0.1:8767</code></td></tr>
+            <tr><td><code>BASE_URL</code></td><td>开闭环脚本默认连的服务地址</td><td><code>http://127.0.0.1:8766</code></td></tr>
           </tbody>
         </table></div>
       </section>
@@ -608,9 +599,9 @@ docker compose -f deploy/docker-compose.yml up -d</code></pre></div>
         <ol>
           <li>服务器装 Docker Engine + compose 插件(<code>docker info</code> 正常)。</li>
           <li>拉代码(或把镜像推私有 registry 再拉);先在该机构建 <code>vortex-base</code>。</li>
-          <li>准备数据目录(来自 vortex_data 导出),把 <code>.env</code> 的 <code>VORTEX_BACKTEST_WORKSPACE</code> 指过去。</li>
-          <li><code>docker compose up -d --build</code> → <code>curl http://127.0.0.1:8767/health</code>。</li>
-          <li>对外服务:配 <code>VORTEX_BACKTEST_TOKEN</code> + <code>VORTEX_BACKTEST_BIND_ADDR=0.0.0.0</code>,前置反代/防火墙。</li>
+          <li>准备数据目录(来自 vortex_data 导出):默认 <code>~/vortex/{workspace,state}</code>,可用 <code>VORTEX_*_HOST_ROOT</code> 覆盖宿主机根。</li>
+          <li><code>vortex run up backtest</code> → <code>curl http://127.0.0.1:8766/health</code>。</li>
+          <li>对外服务:配 <code>VORTEX_BACKTEST_TOKEN</code> + 把 <code>VORTEX_BACKTEST_BIND_ADDR</code> 设为 <code>0.0.0.0</code>,前置反代/防火墙。</li>
         </ol>
       </section>
 
@@ -625,7 +616,7 @@ docker compose -f deploy/docker-compose.yml up -d</code></pre></div>
             <tr><td>回测 <code>minute_data_missing</code></td><td>workspace 缺 <code>stk_mins</code>,或订单日期落在数据窗口外</td></tr>
             <tr><td><code>unsupported_frequency</code> / <code>price_adjustment</code></td><td>仅支持 <code>1min</code> / <code>qfq</code>,按约定传参</td></tr>
             <tr><td>写接口 <code>403</code></td><td>绑了非回环 host 但没配 <code>VORTEX_BACKTEST_TOKEN</code></td></tr>
-            <tr><td>端口被占</td><td><code>lsof -ti tcp:8767 | xargs kill -9</code> 后重启</td></tr>
+            <tr><td>端口被占</td><td><code>lsof -ti tcp:8766 | xargs kill -9</code> 后重启</td></tr>
             <tr><td><code>docker build</code> 拉 base 慢</td><td><code>~/.docker/daemon.json</code> 配 <code>registry-mirrors</code> 后重启 Docker</td></tr>
           </tbody>
         </table></div>

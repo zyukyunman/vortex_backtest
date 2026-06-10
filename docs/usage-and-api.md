@@ -8,25 +8,25 @@
 ## 0. 一分钟跑起来
 
 ```bash
-cd /Users/zyukyunman/Documents/vortex/vortex_backtest
+cd $REPO            # 本仓根目录
 
 # 1) 告诉服务去哪读数据（分钟行情 + 指数基准）
-export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex/vortex_data/workspace
-export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
+export VORTEX_WORKSPACE=$WS          # vortex_data 导出的 workspace 根
+export VORTEX_INDEX_DATA_DIR=$VORTEX_WORKSPACE/data/index_daily
 
-# 2) 起服务（默认 127.0.0.1:8767，自带后台 worker 执行排队作业）
-./.venv/bin/python -m vortex_backtest.cli serve --host 127.0.0.1 --port 8767
+# 2) 起服务（默认 127.0.0.1:8766，自带后台 worker 执行排队作业）
+./.venv/bin/python -m vortex_backtest.cli serve --host 127.0.0.1 --port 8766
 ```
 
 起好后打开三个入口：
 
 | 入口 | 地址 | 用途 |
 |---|---|---|
-| 看板 | http://127.0.0.1:8767/ | 策略中心 / 排行榜 / 全部回测（可视化） |
-| 交互式 API 文档 | http://127.0.0.1:8767/docs | Swagger UI，点点就能试每个接口 |
-| 健康检查 | http://127.0.0.1:8767/health | 返回 `{"status":"ok"}` |
+| 看板 | http://127.0.0.1:8766/ | 策略中心 / 排行榜 / 全部回测（可视化） |
+| 交互式 API 文档 | http://127.0.0.1:8766/docs | Swagger UI，点点就能试每个接口 |
+| 健康检查 | http://127.0.0.1:8766/health | 返回 `{"status":"ok"}` |
 
-> `VORTEX_DATA_WORKSPACE` 指向 **workspace 根目录**（服务自动在后面接 `/data`）。漏配会让回测报 `minute_data_missing`。
+> `VORTEX_WORKSPACE` 指向 **workspace 根目录**（服务自动在后面接 `/data`）。漏配会让回测报 `minute_data_missing`。
 
 ---
 
@@ -64,14 +64,14 @@ export VORTEX_INDEX_DATA_DIR=$VORTEX_DATA_WORKSPACE/data/index_daily
 # 服务起好后（见 §0）
 scripts/backtest_roundtrip.sh                        # 默认标的/区间（600000.SH，05-06~06-05）
 scripts/backtest_roundtrip.sh --symbol 000001.SZ --buy-date 2026-05-06 --sell-date 2026-05-20
-scripts/backtest_roundtrip.sh --base-url http://10.0.0.5:8767 --token "$TOK"   # 远端 + 鉴权
+scripts/backtest_roundtrip.sh --base-url http://10.0.0.5:8766 --token "$TOK"   # 远端 + 鉴权
 scripts/backtest_roundtrip.sh --help                 # 全部选项
 ```
 
 **(B) 纯 curl（看清每一步协议）**：
 
 ```bash
-B=http://127.0.0.1:8767
+B=http://127.0.0.1:8766
 
 # 建账户
 curl -s -XPOST $B/accounts -H 'Content-Type: application/json' \
@@ -124,7 +124,7 @@ curl -s "$B/symbols/688169.SH"           # 代码归属板块 + 手数/涨跌停
 
 ## 4. REST 接口清单
 
-基址 `http://127.0.0.1:8767`。请求/响应均为 JSON。**最省事的学习方式：直接开 `/docs` 在线试。**
+基址 `http://127.0.0.1:8766`。请求/响应均为 JSON。**最省事的学习方式：直接开 `/docs` 在线试。**
 
 ### 写接口（建账户 / 下单 / 提交回测）
 
@@ -186,7 +186,7 @@ curl -s "$B/symbols/688169.SH"           # 代码归属板块 + 手数/涨跌停
 curl 示例：
 
 ```bash
-B=http://127.0.0.1:8767
+B=http://127.0.0.1:8766
 curl -s "$B/backtests?account_id=demo"
 curl -s "$B/strategies?account_id=demo"
 curl -s "$B/leaderboard?account_id=demo&metric=total_return&scope=best"
@@ -198,7 +198,7 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 
 ## 5. 看板用法
 
-打开 http://127.0.0.1:8767/ ，顶部三标签：**首页（策略中心）/ 排行榜 / 全部回测**。
+打开 http://127.0.0.1:8766/ ，顶部三标签：**首页（策略中心）/ 排行榜 / 全部回测**。
 
 - **首页 = 策略中心**：顶部 KPI（策略数 / 运行中 / 近 7 天活跃 / 历史最优收益）；**排行榜**一行同时看 收益·年化·Sharpe·Calmar·回撤 + 标的，右上「排序依据」切指标与 最优/最新；**我的策略**表（收藏★、置顶、回测次数；勾选 ≥2 个点「对比」）；**运行中** + **近期活动**（状态点 + 完成/失败徽章 + 相对时间）。
 - **策略详情**（点策略名进入）：最新/最优指标卡 + **净值曲线（起点 1.0，叠加沪深300，下方回撤轴）** + **历次回测**（点某次下钻到该次明细）+ **当前持仓** + **成交记录**。
@@ -224,8 +224,8 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 回测 `failed: minute_data_missing` | 起服务时没设 `VORTEX_DATA_WORKSPACE`，或订单日期落在 23 天窗口外 |
-| 端口被占 | `lsof -ti tcp:8767 \| xargs kill -9` 后重启 |
+| 回测 `failed: minute_data_missing` | 起服务时没设 `VORTEX_WORKSPACE`，或订单日期落在 23 天窗口外 |
+| 端口被占 | `lsof -ti tcp:8766 \| xargs kill -9` 后重启 |
 | 写接口 403 | 绑了非回环 host 且没配 `VORTEX_BACKTEST_TOKEN`；本机回环默认放行 |
 | 基准为空 | 没设 `VORTEX_INDEX_DATA_DIR`（指向 `.../workspace/data/index_daily`） |
 | 看板图表不显示 | 已本地内置 Chart.js（`web/static/vendor/`），缺失会退到内联 SVG 静态预览 |
@@ -235,12 +235,12 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
 
 | 变量 | 作用 | 示例 |
 |---|---|---|
-| `VORTEX_DATA_WORKSPACE` | 行情 workspace 根目录（自动接 `/data`） | `/Users/zyukyunman/Documents/vortex/vortex_data/workspace` |
-| `VORTEX_INDEX_DATA_DIR` | 指数基准目录 | `$VORTEX_DATA_WORKSPACE/data/index_daily` |
-| `VORTEX_BACKTEST_HOST` / `PORT` | 服务监听地址 | `127.0.0.1` / `8767` |
+| `VORTEX_WORKSPACE` | 行情 workspace 根目录（自动接 `/data`） | vortex_data 导出的 workspace 根（`$WS`） |
+| `VORTEX_INDEX_DATA_DIR` | 指数基准目录 | `$VORTEX_WORKSPACE/data/index_daily` |
+| `VORTEX_BACKTEST_HOST` / `PORT` | 服务监听地址 | `127.0.0.1` / `8766` |
 | `VORTEX_BACKTEST_TOKEN` | 写接口鉴权（非回环必配） | 任意密钥 |
-| `BASE_URL` | 开闭环脚本 `backtest_roundtrip.sh` 默认连的服务地址 | `http://127.0.0.1:8767` |
-| `VORTEX_BACKTEST_STATE_DIR` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
+| `BASE_URL` | 开闭环脚本 `backtest_roundtrip.sh` 默认连的服务地址 | `http://127.0.0.1:8766` |
+| `VORTEX_STATE` | 状态库目录（账户/作业/meta） | 缺省 repo `state/` |
 
 ---
 
@@ -255,7 +255,7 @@ curl -s "$B/backtests/<job_id>/trades?limit=25&offset=0" -D - | grep -i x-total-
    ```bash
    python scripts/reconcile_statement.py \
        --summary account_summary.json --statement 对账单.csv \
-       --events-dir "$VORTEX_DATA_WORKSPACE/data/events" --tolerance 0.005
+       --events-dir "$VORTEX_WORKSPACE/data/events" --tolerance 0.005
    ```
 
    按 `(date, symbol, side)` 聚合比较 数量 / 成交额 / 费用，超差或未匹配列入"需排查"（退出码 1，便于 CI 卡口）。窗口内**除权**的标的（读 `events.ex_date`）标注为**预期 qfq 分红差**，与真 bug 区分。成交记录另含 `realized_pnl`（已实现盈亏）与 `requested_quantity`（原始下单量，便于识别量能上限导致的部分成交）。

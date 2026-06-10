@@ -8,6 +8,8 @@ references: vortex_data/Dockerfile, vortex_data/docker-compose.yml
 
 # 容器化与镜像策略建议（迁移到 Linux 服务器）
 
+> 注：配置/端口以 vortex_common ADR-003 + config/registry.yml 为准（本文为历史记录）。
+
 ## 结论（建议）
 
 采纳你的方向并细化：**初期 = 共享 base 镜像 + 各服务各自镜像；后期 = 一个顶层 compose 把两服务编排到一起（不是合并成一个镜像）。**

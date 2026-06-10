@@ -1,7 +1,7 @@
 # 自研（replay）分钟级 A 股回测引擎设计（历史快照）
 
 > 注：本文为早期设计快照。引擎实为**自研纯 Python 分钟撮合**，早期误称 "Backtrader" 但从未真正使用该框架；已于 2026-06-07 正名为 `replay`、并删除 backtrader 死依赖（见 design/14、design/15）。下文 "Backtrader" 字样按 `replay` 引擎理解。
-> 另：分钟级报告端点（`/minutes`）已移除（报告统一为**日级**）；服务端口规范已改为 **8767**（避开 vortex_data 的 8765）。
+> 另：分钟级报告端点（`/minutes`）已移除（报告统一为**日级**）；服务端口规范为 **8766**（避开 vortex_data 的 8765；端口规范以 vortex_common 的 `config/registry.yml` + ADR-003 为准）。
 
 ## 目标
 
@@ -11,7 +11,7 @@
 
 ## 数据口径
 
-服务从 `VORTEX_DATA_WORKSPACE` 指向的本地 Tushare workspace 读取 Parquet 数据；未设置时默认 `/Users/zyukyunman/Documents/vortex_workspace`。
+服务从 `VORTEX_WORKSPACE` 指向的本地 Tushare workspace 读取 Parquet 数据；容器内默认 `/workspace`（宿主机由 `vortex run up backtest` 用 `~/vortex/workspace` 注入，可用 `VORTEX_*_HOST_ROOT` 覆盖）。
 
 核心数据集：
 
@@ -87,17 +87,17 @@ python3 -m venv .venv
 启动：
 
 ```bash
-export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
-export VORTEX_BACKTEST_STATE_DIR=/tmp/vortex-backtest-state
+export VORTEX_WORKSPACE=$WS          # vortex_data 导出的 workspace 根
+export VORTEX_STATE=$REPO/state       # 账户/作业/报告状态目录
 export VORTEX_BACKTEST_HOST=127.0.0.1
-export VORTEX_BACKTEST_PORT=8767
+export VORTEX_BACKTEST_PORT=8766
 .venv/bin/vortex-backtest serve
 ```
 
 健康检查：
 
 ```bash
-curl http://127.0.0.1:8767/health
+curl http://127.0.0.1:8766/health
 ```
 
 如果当前 workspace 没有 `data/stk_mins`，分钟回测会明确失败为 `minute_data_missing`。这不是服务异常，而是数据预检阻止伪分钟回测通过。

@@ -28,10 +28,10 @@ HTTP 协议层 + 异步作业 + A 股分钟撮合/规则层 + Tushare 本地 Par
 
 ## 数据要求
 
-启动前设置：
+启动前设置（`$WS` = vortex_data 导出的 workspace 根目录）：
 
 ```bash
-export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
+export VORTEX_WORKSPACE=$WS
 ```
 
 服务读取以下本地数据集：
@@ -53,7 +53,7 @@ export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
 建议 Python 3.12 或 3.13（需 ≥3.11）：
 
 ```bash
-cd /Users/zyukyunman/Documents/vortex/vortex_backtest
+cd $REPO            # 本仓根目录
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
@@ -61,17 +61,19 @@ python3.12 -m venv .venv
 启动服务（命令行 `serve` 子命令）：
 
 ```bash
-export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex_workspace
-export VORTEX_BACKTEST_STATE_DIR=/tmp/vortex-backtest-state
+export VORTEX_WORKSPACE=$WS                  # vortex_data 导出的 workspace 根
+export VORTEX_STATE=$REPO/state              # 账户/作业/报告状态目录
 export VORTEX_BACKTEST_HOST=127.0.0.1
-export VORTEX_BACKTEST_PORT=8767
+export VORTEX_BACKTEST_PORT=8766
 .venv/bin/vortex-backtest serve
 ```
+
+容器部署用 `vortex run up backtest`（端口 8766，宿主机挂载默认 `~/vortex/{workspace,state}`，可用 `VORTEX_*_HOST_ROOT` 覆盖）；全栈用 `vortex run deploy`。端口规范以 vortex_common 的 `config/registry.yml` + ADR-003 为准。
 
 健康检查：
 
 ```bash
-curl http://127.0.0.1:8767/health
+curl http://127.0.0.1:8766/health
 ```
 
 如果本地没有 `data/stk_mins`，服务会启动成功，但分钟回测会失败为 `minute_data_missing`。这是预期的数据预检行为，不会伪装成日线回测成功。
@@ -81,7 +83,7 @@ curl http://127.0.0.1:8767/health
 创建账户：
 
 ```bash
-curl -X POST http://127.0.0.1:8767/accounts \
+curl -X POST http://127.0.0.1:8766/accounts \
   -H 'Content-Type: application/json' \
   -d '{"account_id":"demo","initial_cash":100000}'
 ```
@@ -89,7 +91,7 @@ curl -X POST http://127.0.0.1:8767/accounts \
 提交订单：
 
 ```bash
-curl -X POST http://127.0.0.1:8767/accounts/demo/orders \
+curl -X POST http://127.0.0.1:8766/accounts/demo/orders \
   -H 'Content-Type: application/json' \
   -d '{
     "order_batch_id":"batch-main",
@@ -105,7 +107,7 @@ curl -X POST http://127.0.0.1:8767/accounts/demo/orders \
 运行单策略回测：
 
 ```bash
-curl -X POST http://127.0.0.1:8767/backtests \
+curl -X POST http://127.0.0.1:8766/backtests \
   -H 'Content-Type: application/json' \
   -d '{
     "account_id":"demo",
@@ -128,11 +130,11 @@ curl -X POST http://127.0.0.1:8767/backtests \
 回测是**异步**的：`POST /backtests` 返回 `202 + job_id`，先轮询作业到完成，再取**日级**报告（已无分钟级端点）：
 
 ```bash
-curl http://127.0.0.1:8767/backtests/<job_id>            # 轮询 status 到 completed
-curl http://127.0.0.1:8767/backtests/<job_id>/summary
-curl http://127.0.0.1:8767/backtests/<job_id>/daily
-curl http://127.0.0.1:8767/backtests/<job_id>/trades
-curl http://127.0.0.1:8767/backtests/<job_id>/rejections
+curl http://127.0.0.1:8766/backtests/<job_id>            # 轮询 status 到 completed
+curl http://127.0.0.1:8766/backtests/<job_id>/summary
+curl http://127.0.0.1:8766/backtests/<job_id>/daily
+curl http://127.0.0.1:8766/backtests/<job_id>/trades
+curl http://127.0.0.1:8766/backtests/<job_id>/rejections
 ```
 
 或用开闭环脚本一条命令跑完「建账户 → 买卖 → 结束 → 关闭 → 报告」（仅依赖 curl + python3）：
@@ -179,8 +181,8 @@ HTTP 接口协议完整参考见 [design/10-api-protocol.md](design/10-api-proto
 
 ```bash
 .venv/bin/python examples/run_30_day_http_sample.py \
-  --base-url http://127.0.0.1:8767 \
-  --workspace /Users/zyukyunman/Documents/vortex_workspace \
+  --base-url http://127.0.0.1:8766 \
+  --workspace "$VORTEX_WORKSPACE" \
   --symbols 000001.SZ,688809.SH
 ```
 

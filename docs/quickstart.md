@@ -11,8 +11,8 @@
 - **行情数据**：来自 `vortex_data`。用环境变量指向其 workspace（loader 自动接 `/data`）：
 
   ```bash
-  export VORTEX_DATA_WORKSPACE=/Users/zyukyunman/Documents/vortex/vortex_data/workspace
-  export VORTEX_INDEX_DATA_DIR="$VORTEX_DATA_WORKSPACE/data/index_daily"   # 基准曲线用，可选
+  export VORTEX_WORKSPACE=$WS          # vortex_data 导出的 workspace 根
+  export VORTEX_INDEX_DATA_DIR="$VORTEX_WORKSPACE/data/index_daily"   # 基准曲线用，可选
   ```
 
 - **当前可用数据窗口**：`2026-05-06 ~ 2026-06-05`（约 23 个交易日）。订单交易日须落在窗口内、且当日该标的有行情，否则记 `no_market_data` 拒单。
@@ -35,16 +35,16 @@
 服务是独立 HTTP 服务，回测**异步**（提交即返回 `job_id`，轮询到 `completed`）。所有操作走 HTTP；命令行只用来起服务。
 
 ```bash
-# (1) 起服务（默认 127.0.0.1:8767；命令行只剩 serve）
-./.venv/bin/vortex-backtest serve --port 8767
-#   等价：./.venv/bin/python -m vortex_backtest.cli serve --port 8767
+# (1) 起服务（默认 127.0.0.1:8766；命令行只剩 serve）
+./.venv/bin/vortex-backtest serve --port 8766
+#   等价：./.venv/bin/python -m vortex_backtest.cli serve --port 8766
 ```
 
 另开一个终端，用**开闭环脚本**一条命令跑完「建账户 → 买卖 → 结束 → 关闭 → 报告」（仅依赖 curl + python3）：
 
 ```bash
 scripts/backtest_roundtrip.sh --symbol 600000.SH --start 2026-05-06 --end 2026-06-05
-#   远端 + 鉴权：scripts/backtest_roundtrip.sh --base-url http://10.0.0.5:8767 --token "$TOK"
+#   远端 + 鉴权：scripts/backtest_roundtrip.sh --base-url http://10.0.0.5:8766 --token "$TOK"
 #   全部选项：  scripts/backtest_roundtrip.sh --help
 ```
 
@@ -112,7 +112,7 @@ positions.csv / daily_equity.csv / minute_equity.csv`）：
 ```bash
 python scripts/reconcile_statement.py \
     --summary account_summary.json --statement 对账单.csv \
-    --events-dir "$VORTEX_DATA_WORKSPACE/data/events" --tolerance 0.005
+    --events-dir "$VORTEX_WORKSPACE/data/events" --tolerance 0.005
 ```
 
 按 `(date, symbol, side)` 聚合比较数量/成交额/费用；窗口内**除权**的标的会被标注为**预期 qfq 分红差**（与真 bug 区分）。对账单 CSV 列：`date,symbol,side,quantity,price`（可含 `amount/commission/stamp_tax/transfer_fee/request_id`）。
@@ -134,7 +134,7 @@ python scripts/reconcile_statement.py \
 
 | 现象 | 原因 |
 |---|---|
-| 作业 `failed: minute_data_missing` | 没设 `VORTEX_DATA_WORKSPACE`，或订单日期/区间落在数据窗口外 |
+| 作业 `failed: minute_data_missing` | 没设 `VORTEX_WORKSPACE`，或订单日期/区间落在数据窗口外 |
 | 拒单 `no_market_data` | 该标的当日无行情（停牌/非交易日/越界） |
 | 拒单 `t_plus_1_not_sellable` | 当日买入当日卖 |
 | 拒单 `limit_up_buy_blocked` / `limit_down_sell_blocked` | 涨停买 / 跌停卖 |

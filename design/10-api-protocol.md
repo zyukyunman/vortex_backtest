@@ -7,6 +7,8 @@ status: reference
 
 # vortex_backtest HTTP 接口协议
 
+> 注：配置/端口以 vortex_common ADR-003 + config/registry.yml 为准（本文为历史记录）。
+
 > 本文是 **接口定稿（契约）**：定义 vortex_backtest 对外暴露的全部 HTTP 端点、
 > 请求/响应结构、回测生命周期与错误约定。实现以本文为准；偏离即视为 bug。
 > 上手教程见 [docs/usage-and-api.md](../docs/usage-and-api.md)，端到端示例脚本见
