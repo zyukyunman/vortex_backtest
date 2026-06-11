@@ -25,31 +25,31 @@ python3.13 -m venv .venv     # 或 python3.12
 
 之后一律用 `.venv/bin/python ...`（或先 `source .venv/bin/activate`），别用裸 `python3`。
 
-### 2.1 命令行 `vortex-backtest`（serve + 协议客户端）
+### 2.1 命令行 `vortex-backtest`（只剩 serve）
 
-安装后有命令行入口（改过入口的话先重装一次 `pip install -e '.[dev]'`）。`serve` 起服务，其余子命令通过 HTTP 协议操作运行中的服务：
+安装后有命令行入口（改过入口的话先重装一次 `pip install -e '.[dev]'`）。命令行只负责起服务；
+回测操作（建账户 / 开会话 / advance / close / 报告）统一走 HTTP（见 [usage-and-api.md](usage-and-api.md)）：
 
 ```bash
-.venv/bin/vortex-backtest serve --port 8766           # 起服务
-.venv/bin/vortex-backtest account create --id demo --cash 100000
-.venv/bin/vortex-backtest order add --account demo --request-id buy-1 \
-    --date 2026-01-02 --symbol 000001.SZ --side buy --qty 100 --batch b1
-.venv/bin/vortex-backtest backtest run --account demo --start 2026-01-02 --end 2026-01-05 \
-    --batch b1 --wait                                  # 提交并轮询到完成
-.venv/bin/vortex-backtest report <job_id> --what daily
+.venv/bin/vortex-backtest serve            # 起服务（默认 127.0.0.1:8766）
 ```
 
-完整协议与命令行参考见 `design/10-api-protocol.md`。**注意 API 是异步的**：`POST /backtests` 返回 `202+job_id`，需轮询 `GET /backtests/{job_id}` 到 `completed` 再取报告（CLI 的 `--wait` 已封装这一步）。
+会话协议参考见 `design/18-session-backtest-engine.md` 与服务自带 `/docs`(Swagger)。
 
 ---
 
 ## 3. 数据
 
 ```bash
-export VORTEX_WORKSPACE=$WS          # vortex_data 导出的 workspace 根
+export VORTEX_WORKSPACE=$WS                            # 本地直读回退用
+export VORTEX_DATA_URL=http://127.0.0.1:8765           # 走 data 取数网关(推荐, RAW+分红入账)
+export VORTEX_DATA_DASHBOARD_TOKEN=<token>             # 网关 token(与 data 服务共享同名变量)
 ```
 
-需要 `data/stk_mins`（1min 主行情）、`data/adj_factor`、`data/stk_limit`，以及可选的 `suspend_d / stock_st / instruments / calendar`。缺关键表时分钟回测会明确失败为 `*_data_missing`（数据预检，不是 bug）。
+本地直读需要 `data/stk_mins`（1min 主行情）、`data/adj_factor`、`data/stk_limit`，以及可选的
+`suspend_d / stock_st`；网关路另需 data 落盘 `dividend`。缺关键表时 loader 层明确报
+`*_data_missing`，会话 advance 表现为 `no_market_data` 拒单/空帧（数据预检，不是 bug）。
+两条路口径差异见 README「数据」一节。
 
 ---
 
@@ -68,8 +68,8 @@ vortex run down backtest             # 停服务
 
 全栈一把起：`vortex run deploy`。端口规范以 vortex_common 的 `config/registry.yml` + ADR-003 为准（内外一致）。
 
-- 卷：`/workspace` = 数据（默认**只读**挂载，vortex_data 导出）；`/state` = 账户 / 订单 / 作业 / 报告（可写）。宿主机挂载路径由 `vortex run up backtest` 自动用 `~/vortex/{workspace,state}`，可用 `VORTEX_*_HOST_ROOT` 覆盖。
-- 端口：默认只绑 `127.0.0.1:8766`（仅本机，内外一致）。要对外暴露：把 `VORTEX_BACKTEST_BIND_ADDR` 设为 `0.0.0.0` 并用 `vortex run up backtest` 启动，并**先实现并配置** `VORTEX_BACKTEST_TOKEN`（写接口鉴权，design/03 阶段6 待做；在此之前靠只绑回环保证安全）。
+- 卷：`/workspace` = 数据（默认**只读**挂载，vortex_data 导出）；`/state` = 账户 / 会话 / 报告（可写）。宿主机挂载路径由 `vortex run up backtest` 自动用 `~/vortex/{workspace,state}`，可用 `VORTEX_*_HOST_ROOT` 覆盖。
+- 端口：默认只绑 `127.0.0.1:8766`（仅本机，内外一致）。要对外暴露：把 `VORTEX_BACKTEST_BIND_ADDR` 设为 `0.0.0.0` 并用 `vortex run up backtest` 启动，并**先配置** `VORTEX_BACKTEST_TOKEN`（写接口鉴权已实现、fail-closed：未配 token 时非回环 host 直接 403）。
 
 服务调用（建账户 / 下单 / 跑回测 / 查询）见 `README.md`「基本调用」。
 
@@ -94,7 +94,7 @@ vortex run down backtest             # 停服务
 | `cannot import name 'StrEnum'` | Python < 3.11 | 用 3.12 / 3.13 建 venv |
 | `缺 vortex-base:latest` | 基础镜像没建 | `(cd ../vortex_common && scripts/build-base-image.sh)` 后重试 |
 | 回测 `minute_data_missing` | workspace 缺 `stk_mins` | 用 `vortex_data` 补分钟数据 |
-| `unsupported_frequency/price_adjustment` | 仅支持 `1min` / `qfq` | 按约定传参 |
+| 开会话 `unsupported_level` | `level` 仅支持 `daily` / `1min` | 按约定传参 |
 | `docker build` 拉 base 很慢 / `DeadlineExceeded` | 直连 Docker Hub 慢 | 重试；**可选**配加速：`~/.docker/daemon.json` 加 `"registry-mirrors": ["https://docker.m.daocloud.io"]`（或你的阿里云个人加速器 `https://<id>.mirror.aliyuncs.com`），重启 Docker |
 | `.git/index.lock ... exists` | 残留锁 | `rm -f .git/index.lock` |
 
@@ -102,8 +102,9 @@ vortex run down backtest             # 停服务
 
 ## 7. 代码 / 分支现状
 
-- 设计文档：`design/01-15`（评审 / ADR / 产品化 / UI 规格 / 引擎选型 / 数据需求 / 容器策略 / API 协议 / trader 完善）。
-- 引擎已去 Qlib，回放为自研 A 股分钟撮合 + 直读 parquet（design/14 / ADR-1 rev.2）；backtrader 死依赖已删，正名为 replay（design/15）。
+- 设计文档：`design/01-19`（评审 / ADR / 产品化 / 引擎选型 / 数据需求 / 容器策略 / **18 会话式引擎** / 对抗测试）。
+- 引擎已去 Qlib，撮合内核为自研 A 股分钟撮合（design/14 / ADR-1 rev.2）；HTTP 面已迁会话式
+  sessions/advance/close（design/18），旧异步作业面已删；取数走 data PIT 网关（直读 parquet 为离线回退）。
 - 部署侧已接入统一 `vortex-base` 基础镜像（见 `../vortex_common/docs/migration/README.md`）。
 
 _（历史"附：本地验证 Qlib"小节已删除——qlib 引擎已于 2026-06-07 移除，见 design/14。）_

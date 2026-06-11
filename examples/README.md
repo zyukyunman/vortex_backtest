@@ -5,7 +5,7 @@
 ## 前置
 
 1. **起 data 网关**（vortex_data）：默认 `127.0.0.1:8765`。建议设 `VORTEX_DATA_DASHBOARD_TOKEN`。
-2. **起 backtest 服务**（vortex_backtest）：`vortex-backtest serve`（默认 `127.0.0.1:8767`），
+2. **起 backtest 服务**（vortex_backtest）：`vortex-backtest serve`（默认 `127.0.0.1:8766`），
    并设 `VORTEX_DATA_URL=http://127.0.0.1:8765` 让它走网关（不设则回退本地直读 parquet）。
    若 data 网关配了 token，backtest 侧也设同名 `VORTEX_DATA_DASHBOARD_TOKEN`。
 3. 运行：

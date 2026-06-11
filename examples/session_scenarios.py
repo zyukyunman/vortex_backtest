@@ -4,7 +4,7 @@
 
 前置：
   1. 起 data 网关（vortex_data）：默认 127.0.0.1:8765；建议设 `VORTEX_DATA_DASHBOARD_TOKEN`。
-  2. 起 backtest 服务（vortex_backtest）：`vortex-backtest serve`，默认 127.0.0.1:8767；
+  2. 起 backtest 服务（vortex_backtest）：`vortex-backtest serve`，默认 127.0.0.1:8766；
      并让它能访问网关——设 `VORTEX_DATA_URL=http://127.0.0.1:8765`（不设则回退本地直读 parquet）。
   3. 跑本脚本：
         python examples/session_scenarios.py daily        # 日频选股
@@ -15,7 +15,7 @@
         python examples/session_scenarios.py all
 
 环境变量：
-  VORTEX_BACKTEST_URL  默认 http://127.0.0.1:8767
+  VORTEX_BACKTEST_URL  默认 http://127.0.0.1:8766
   VORTEX_BACKTEST_TOKEN 若 backtest 配了写 token，则带上
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ import sys
 
 import httpx
 
-BASE = os.getenv("VORTEX_BACKTEST_URL", "http://127.0.0.1:8767").rstrip("/")
+BASE = os.getenv("VORTEX_BACKTEST_URL", "http://127.0.0.1:8766").rstrip("/")
 TOKEN = os.getenv("VORTEX_BACKTEST_TOKEN")
 # 服务对服务直连，绕过环境 HTTP(S)/SOCKS 代理。
 _C = httpx.Client(trust_env=False, timeout=120.0,

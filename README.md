@@ -1,52 +1,54 @@
 # vortex_backtest
 
-独立 HTTP 回测/账户回放服务。当前路线固定为：
+独立 HTTP **会话式回测/账户回放**服务（A 股分钟级）。策略与服务的交互模型是
+「**建会话 → 按模拟时钟逐步 advance（提交委托+推进）→ close 出报告**」，
+服务端控 `sim_time`、按 `as_of` 强制 point-in-time 取数（防未来函数）。
 
 ```text
-HTTP 协议层 + 异步作业 + A 股分钟撮合/规则层 + Tushare 本地 Parquet 数据
+HTTP 协议层(sessions) + A 股分钟撮合/规则内核 + data 取数网关(PIT) / 本地 Parquet 回退
 ```
 
-服务不再维护 RQAlpha adapter，也不再维护旧 `ashare_replay` fallback。第一阶段只支持 A 股现金账户、`1min` 分钟回测、前复权 `qfq` 单一口径、多策略独立账户回放。
-
-架构评审 / 引擎选型 / 协议 / 路线图见 `design/01`–`design/10`；部署见 [docs/operations.md](docs/operations.md)；**HTTP 接口协议**（端点 / 生命周期 / schema / 鉴权）见 [design/10](design/10-api-protocol.md)。
+第一阶段只支持 A 股现金账户、`1min` 分钟回测、多策略独立账户。
+会话引擎与跨服务契约见 [design/18](design/18-session-backtest-engine.md)；部署见
+[docs/operations.md](docs/operations.md)；交互式 API 文档见服务自带 `/docs`(Swagger)。
 
 ## 当前能力
 
-- `POST /accounts` 创建账户，默认 `engine=replay`
-- `POST /accounts/{account_id}/orders` 提交外部订单
-- `POST /backtests` 提交 qfq 回测（**异步**：返回 `202 + job_id`，轮询 `GET /backtests/{job_id}` 到 `completed`）
-- `GET /backtests/{job_id}` 查询作业状态/进度
-- `GET /backtests/{job_id}/summary` 查询账户汇总
-- `GET /backtests/{job_id}/daily` 查询日级净值、持仓、成交、拒单
-- `GET /backtests/{job_id}/trades` 查询成交
-- `GET /backtests/{job_id}/rejections` 查询拒单
-- `GET /accounts/{account_id}/summary` 查询账户最近一次完成回测
-- `GET /accounts/{account_id}/positions` 查询账户最近持仓
-- `GET /symbols/{symbol}` 查询 Tushare/MiniQMT/Vortex 统一代码和板块规则
+- `POST /accounts` 建账户；`GET /accounts`、`GET /accounts/{id}` 查询
+- `POST /sessions` 开会话（账户、区间、股池、撮合配置）；`GET /sessions`、`GET /sessions/{id}` 列表/当前状态
+- `POST /sessions/{id}/advance` 提交本步委托 + 推进模拟时钟（`request_id` 幂等去重，重试不双成交）
+- `POST /sessions/{id}/data` 策略取数（透传 data 网关，服务端用会话 `sim_time` 当 `as_of`，不信客户端时间）
+- `POST /sessions/{id}/close` 关闭会话出最终报告
+- `GET /sessions/{id}/summary|daily|trades|rejections|minutes` 报告（会话期间即可读当前累积态）
+- `GET /symbols/{symbol}` Tushare/MiniQMT/Vortex 统一代码与板块规则
+- `/ui` 看板、`/guide` 文档站、`/docs` Swagger
 
-订单唯一性由 `account_id + order_batch_id + request_id` 保证。同一账户可以保留多批订单；多策略回测时每个 strategy 可通过 `params.order_batch_id` 选择自己的订单批次。
+> 旧「订单回放」异步作业 HTTP 面已删除；批量订单回放 = 会话的特例
+> （订单带 `trade_date+exec_time` 全预提交，一次 advance 到 end），
+> 见 `examples/session_scenarios.py` 的 `replay` 场景。
 
-## 数据要求
+## 数据：两条取数路（口径不同，须知悉）
 
-启动前设置（`$WS` = vortex_data 导出的 workspace 根目录）：
+| 路 | 触发条件 | 撮合/估值口径 | 分红处理 | 用途 |
+|---|---|---|---|---|
+| **data 网关**（推荐/部署） | 配 `VORTEX_DATA_URL`（+`VORTEX_DATA_DASHBOARD_TOKEN`） | RAW 不复权真实价 | 除权日显式入账现金/送转（真实账户口径） | 生产；服务端强制 PIT |
+| 本地直读（回退） | 不配 `VORTEX_DATA_URL`，配 `VORTEX_WORKSPACE` | qfq 前复权 | 不入账（已吸进前复权价） | 离线开发/调试 |
 
-```bash
-export VORTEX_WORKSPACE=$WS
-```
+两条路的总收益近似一致（纯拆股精确等价），但现金流/持仓估值数值不同，不要混用对账。
 
-服务读取以下本地数据集：
+本地直读需要 workspace 下数据集（loader 层缺关键表报 `*_data_missing`；会话 advance 对缺数
+标的优雅降级——表现为 `no_market_data` 拒单/空帧，不伪装成交）：
 
-| 数据集 | 用途 | 缺失错误 |
+| 数据集 | 用途 | 缺失行为（loader 层） |
 | --- | --- | --- |
 | `data/stk_mins` | 1min 主行情 | `minute_data_missing` |
-| `data/adj_factor` | 生成 qfq 分钟价格 | `adjustment_data_missing` |
+| `data/adj_factor` | qfq 前复权 | `adjustment_data_missing` |
 | `data/stk_limit` | 涨跌停价 | `market_rules_data_missing` |
 | `data/suspend_d` | 停复牌 | 缺表按无停牌处理 |
 | `data/stock_st` | 历史 ST | 缺表按非 ST 处理 |
-| `data/instruments` | 标的主数据 | 缺表退回代码规则 |
-| `data/calendar` | 交易日排序 | 缺表使用行情日期 |
 
-当前实现强制全链路 `qfq`：指标、买卖、成交、限价、持仓估值和 NAV 都用前复权价格。第一阶段不做现金分红入账；如果需要券商真实流水账，需要先把 `events/dividend` 落盘并进入第二阶段。
+网关路另需 data 服务落盘 `dividend`（含 `ex_date` 列）供除权日入账。
+数据由 vortex_data 抓取/导出，本服务**只读消费**；当前落盘覆盖以 vortex_data 实际为准。
 
 ## 安装和启动
 
@@ -58,135 +60,58 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-启动服务（命令行 `serve` 子命令）：
+启动服务（命令行只剩 `serve` 子命令；回测操作统一走 HTTP）：
 
 ```bash
-export VORTEX_WORKSPACE=$WS                  # vortex_data 导出的 workspace 根
-export VORTEX_STATE=$REPO/state              # 账户/作业/报告状态目录
-export VORTEX_BACKTEST_HOST=127.0.0.1
-export VORTEX_BACKTEST_PORT=8766
-.venv/bin/vortex-backtest serve
-```
-
-容器部署用 `vortex run up backtest`（端口 8766，宿主机挂载默认 `~/vortex/{workspace,state}`，可用 `VORTEX_*_HOST_ROOT` 覆盖）；全栈用 `vortex run deploy`。端口规范以 vortex_common 的 `config/registry.yml` + ADR-003 为准。
-
-健康检查：
-
-```bash
+export VORTEX_WORKSPACE=$WS                            # 本地直读回退用
+export VORTEX_DATA_URL=http://127.0.0.1:8765           # 网关路(推荐)
+export VORTEX_DATA_DASHBOARD_TOKEN=<token>             # 网关 token(与 data 服务同名共享)
+export VORTEX_STATE=$REPO/state                        # 账户/会话/报告状态目录
+.venv/bin/vortex-backtest serve                        # 默认 127.0.0.1:8766
 curl http://127.0.0.1:8766/health
 ```
 
-如果本地没有 `data/stk_mins`，服务会启动成功，但分钟回测会失败为 `minute_data_missing`。这是预期的数据预检行为，不会伪装成日线回测成功。
+容器部署用 `vortex run up backtest`（端口 8766，宿主机挂载默认 `~/vortex/{workspace,state}`，
+可用 `VORTEX_*_HOST_ROOT` 覆盖）；全栈用 `vortex run deploy`。
+端口/变量规范以 vortex_common 的 `config/registry.yml` + ADR-003 为准。
+写接口鉴权：配 `VORTEX_BACKTEST_TOKEN` 则必须带 token；未配时仅本机回环放行（fail-closed）。
 
-## 基本调用
-
-创建账户：
-
-```bash
-curl -X POST http://127.0.0.1:8766/accounts \
-  -H 'Content-Type: application/json' \
-  -d '{"account_id":"demo","initial_cash":100000}'
-```
-
-提交订单：
+## 基本调用（会话式）
 
 ```bash
-curl -X POST http://127.0.0.1:8766/accounts/demo/orders \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "order_batch_id":"batch-main",
-    "request_id":"buy-001",
-    "trade_date":"2026-01-02",
-    "symbol":"000001.SZ",
-    "side":1,
-    "quantity":100,
-    "limit_price":10.50
-  }'
+# ① 建账户
+curl -X POST http://127.0.0.1:8766/accounts -H 'Content-Type: application/json' \
+  -d '{"account_id":"demo","initial_cash":1000000}'
+
+# ② 开会话
+curl -X POST http://127.0.0.1:8766/sessions -H 'Content-Type: application/json' \
+  -d '{"account_id":"demo","level":"1min","start_date":"2026-05-06","end_date":"2026-06-05","universe":["000001.SZ"]}'
+# → {"session_id":"...","status":"open",...}
+
+# ③ 买入并推进到当日收盘（to 传日期 = 推进到该日 15:00）
+curl -X POST http://127.0.0.1:8766/sessions/<id>/advance -H 'Content-Type: application/json' \
+  -d '{"request_id":"step1","to":"2026-05-06","orders":[{"request_id":"buy-1","symbol":"000001.SZ","side":1,"quantity":1000,"trade_date":"2026-05-06","exec_time":"09:31"}]}'
+
+# ④ 关闭出报告
+curl -X POST http://127.0.0.1:8766/sessions/<id>/close
+curl http://127.0.0.1:8766/sessions/<id>/summary
 ```
 
-运行单策略回测：
+或一条命令跑完开闭环（建账户 → 会话 → 买卖 → close → 报告，仅依赖 curl + python3）：
 
 ```bash
-curl -X POST http://127.0.0.1:8766/backtests \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "account_id":"demo",
-    "frequency":"1min",
-    "price_adjustment":"qfq",
-    "start_date":"2026-01-02",
-    "end_date":"2026-01-05",
-    "strategies":[
-      {
-        "strategy_id":"main-replay",
-        "strategy_type":"order_replay",
-        "initial_cash":100000,
-        "symbols":["000001.SZ"],
-        "params":{"order_batch_id":"batch-main"}
-      }
-    ]
-  }'
+scripts/backtest_roundtrip.sh --symbol 000001.SZ \
+  --buy-date 2026-05-06 --sell-date 2026-05-13 --start 2026-05-06 --end 2026-06-05
 ```
 
-回测是**异步**的：`POST /backtests` 返回 `202 + job_id`，先轮询作业到完成，再取**日级**报告（已无分钟级端点）：
+委托语义：带 `trade_date`+`exec_time` → 停泊到该日 at-or-after 该分钟首个 bar 成交；
+不带 `exec_time` → 默认下一根 bar（`fill_timing=next_bar`，防未来）。
+T+1、涨跌停、分板手数、费用由规则内核强制。
 
-```bash
-curl http://127.0.0.1:8766/backtests/<job_id>            # 轮询 status 到 completed
-curl http://127.0.0.1:8766/backtests/<job_id>/summary
-curl http://127.0.0.1:8766/backtests/<job_id>/daily
-curl http://127.0.0.1:8766/backtests/<job_id>/trades
-curl http://127.0.0.1:8766/backtests/<job_id>/rejections
-```
+## 多场景示例
 
-或用开闭环脚本一条命令跑完「建账户 → 买卖 → 结束 → 关闭 → 报告」（仅依赖 curl + python3）：
-
-```bash
-scripts/backtest_roundtrip.sh --symbol 000001.SZ --start 2026-01-02 --end 2026-01-05
-```
-
-HTTP 接口协议完整参考见 [design/10-api-protocol.md](design/10-api-protocol.md)。
-
-## 多策略回测
-
-第一阶段多策略是独立账户模型：每个 strategy 独立初始资金、持仓、成交、拒单和净值，最终 summary 做聚合展示。
-
-```json
-{
-  "account_id": "demo",
-  "frequency": "1min",
-  "price_adjustment": "qfq",
-  "start_date": "2026-01-02",
-  "end_date": "2026-01-05",
-  "strategies": [
-    {
-      "strategy_id": "main-replay",
-      "strategy_type": "order_replay",
-      "initial_cash": 100000,
-      "symbols": ["000001.SZ"],
-      "params": {"order_batch_id": "batch-main"}
-    },
-    {
-      "strategy_id": "star-replay",
-      "strategy_type": "order_replay",
-      "initial_cash": 100000,
-      "symbols": ["688809.SH"],
-      "params": {"order_batch_id": "batch-star"}
-    }
-  ]
-}
-```
-
-## 本地样例
-
-样例脚本不导入手工行情，只检查 workspace 分钟数据并调用 HTTP API：
-
-```bash
-.venv/bin/python examples/run_30_day_http_sample.py \
-  --base-url http://127.0.0.1:8766 \
-  --workspace "$VORTEX_WORKSPACE" \
-  --symbols 000001.SZ,688809.SH
-```
-
-如果 workspace 尚未落盘 `stk_mins`，样例会提前退出并提示先补分钟数据。
+`examples/session_scenarios.py` 对真实 HTTP 接口演示 5 种流程（日频选股 / 分钟择时 /
+全市场扫描选股 / 循序渐进取数 / 订单全预提交回放），见 [examples/README.md](examples/README.md)。
 
 ## 验证
 
@@ -194,4 +119,3 @@ HTTP 接口协议完整参考见 [design/10-api-protocol.md](design/10-api-proto
 .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q vortex_backtest tests examples
 ```
-
