@@ -451,7 +451,7 @@ def main() -> None:
     uvicorn.run(
         "vortex_backtest.app:app",
         host=os.getenv("VORTEX_BACKTEST_HOST", "127.0.0.1"),
-        port=int(os.getenv("VORTEX_BACKTEST_PORT", "8767")),
+        port=int(os.getenv("VORTEX_BACKTEST_PORT", "8766")),
         reload=os.getenv("VORTEX_BACKTEST_RELOAD", "0") == "1",
     )
 

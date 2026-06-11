@@ -14,10 +14,11 @@ def test_cli_parser_serve() -> None:
     assert callable(args.func)
 
 
-def test_cli_serve_default_port_is_8767() -> None:
+def test_cli_serve_default_port_is_8766(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VORTEX_BACKTEST_PORT", raising=False)
     parser = build_parser()
     args = parser.parse_args(["serve"])
-    assert args.port == 8767  # 组合部署规范端口（避开 vortex_data 的 8765）
+    assert args.port == 8766  # registry.yml 规范端口（8767 属 vortex_qmt 实盘）
 
 
 @pytest.mark.parametrize(
