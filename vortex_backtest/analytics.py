@@ -216,3 +216,64 @@ def hourly_views(snapshot_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]
 
 def minute_views(snapshot_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [_snapshot_view(r, timestamp=str(r["timestamp"])) for r in snapshot_rows]
+
+
+def rebalance_events(trades: list[Mapping[str, Any]],
+                     daily_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """按 trade_date 聚合成交为调仓事件，附调仓前后持仓 diff（qty/weight）。
+
+    before = 前一交易日 EOD（日历轴上首日 before=空仓）；after = 当日 EOD。
+    """
+    axis = [str(r["trade_date"]) for r in daily_rows]
+    by_date = {str(r["trade_date"]): r for r in daily_rows}
+
+    def eod(d: str | None) -> dict[str, tuple[int, float]]:
+        row = by_date.get(d) if d else None
+        if not row:
+            return {}
+        total = float(row.get("total_value") or 0.0)
+        return {str(p["symbol"]): (int(p["quantity"]),
+                                   float(p["market_value"]) / total if total else 0.0)
+                for p in row.get("positions") or []}
+
+    by_day: dict[str, list[Mapping[str, Any]]] = {}
+    for t in trades:
+        by_day.setdefault(str(t["trade_date"]), []).append(t)
+
+    events: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        rows = by_day[day]
+
+        def side_agg(side: int) -> list[dict[str, Any]]:
+            agg: dict[str, dict[str, Any]] = {}
+            for t in rows:
+                if int(t["side"]) != side:
+                    continue
+                a = agg.setdefault(str(t["symbol"]), {"symbol": str(t["symbol"]), "quantity": 0, "amount": 0.0})
+                a["quantity"] += int(t["quantity"])
+                a["amount"] += float(t["amount"])
+            return [dict(a, avg_price=round(a["amount"] / a["quantity"], 4) if a["quantity"] else None)
+                    for _, a in sorted(agg.items())]
+
+        idx = axis.index(day) if day in axis else -1
+        before = eod(axis[idx - 1]) if idx > 0 else {}
+        after = eod(day)
+        touched = {str(t["symbol"]) for t in rows}
+        touched |= {s for s in set(before) | set(after)
+                    if before.get(s, (0, 0.0))[0] != after.get(s, (0, 0.0))[0]}
+        diff = [{"symbol": s,
+                 "qty_before": before.get(s, (0, 0.0))[0], "qty_after": after.get(s, (0, 0.0))[0],
+                 "weight_before": round(before.get(s, (0, 0.0))[1], 6),
+                 "weight_after": round(after.get(s, (0, 0.0))[1], 6)}
+                for s in sorted(touched)]
+        day_row = by_date.get(day) or {}
+        events.append({
+            "trade_date": day, "n_trades": len(rows),
+            "buys": side_agg(1), "sells": side_agg(2),
+            "fees_total": round(sum(float(t.get("commission", 0)) + float(t.get("stamp_tax", 0))
+                                    + float(t.get("transfer_fee", 0)) for t in rows), 4),
+            "realized_pnl_total": round(sum(float(t.get("realized_pnl", 0)) for t in rows), 4),
+            "position_diff": diff,
+            "cash_after": day_row.get("cash"), "total_value_after": day_row.get("total_value"),
+        })
+    return events

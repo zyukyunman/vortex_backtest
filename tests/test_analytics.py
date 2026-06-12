@@ -132,3 +132,32 @@ def test_minute_views_passthrough():
     snaps = [_mk_snap("2026-02-03T09:31:00", 990.0, 10.0, [_mk_pos("000001.SZ", 1, 10.0)])]
     v = analytics.minute_views(snaps)
     assert v[0]["timestamp"] == "2026-02-03T09:31:00" and v[0]["positions"][0]["weight"] == pytest.approx(0.01)
+
+
+def test_rebalance_events_diff_and_aggregation():
+    daily = [
+        _mk_daily("2026-02-02", 1000.0, 0.0, []),
+        _mk_daily("2026-02-03", 890.0, 110.0, [_mk_pos("000001.SZ", 10, 110.0)]),
+        _mk_daily("2026-02-04", 1002.0, 0.0, []),
+    ]
+    trades = [
+        {"trade_date": "2026-02-03", "symbol": "000001.SZ", "side": 1, "quantity": 6,
+         "amount": 60.0, "commission": 5.0, "stamp_tax": 0.0, "transfer_fee": 0.01, "realized_pnl": 0.0},
+        {"trade_date": "2026-02-03", "symbol": "000001.SZ", "side": 1, "quantity": 4,
+         "amount": 44.0, "commission": 5.0, "stamp_tax": 0.0, "transfer_fee": 0.01, "realized_pnl": 0.0},
+        {"trade_date": "2026-02-04", "symbol": "000001.SZ", "side": 2, "quantity": 10,
+         "amount": 112.0, "commission": 5.0, "stamp_tax": 0.056, "transfer_fee": 0.01, "realized_pnl": 2.0},
+    ]
+    events = analytics.rebalance_events(trades, daily)
+    assert [e["trade_date"] for e in events] == ["2026-02-03", "2026-02-04"]
+    buy_day = events[0]
+    assert buy_day["n_trades"] == 2 and buy_day["sells"] == []
+    assert buy_day["buys"] == [{"symbol": "000001.SZ", "quantity": 10, "amount": 104.0,
+                                "avg_price": pytest.approx(10.4)}]
+    assert buy_day["fees_total"] == pytest.approx(10.02)
+    assert buy_day["position_diff"] == [{"symbol": "000001.SZ", "qty_before": 0, "qty_after": 10,
+                                         "weight_before": 0.0, "weight_after": pytest.approx(0.11)}]
+    assert buy_day["cash_after"] == 890.0 and buy_day["total_value_after"] == 1000.0
+    sell_day = events[1]
+    assert sell_day["position_diff"][0]["qty_after"] == 0
+    assert sell_day["realized_pnl_total"] == pytest.approx(2.0)
