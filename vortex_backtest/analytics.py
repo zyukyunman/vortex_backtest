@@ -91,3 +91,79 @@ def equity_curve(series: Mapping[str, float], benchmark: Mapping[str, float] | N
                     bbase = carry or 1.0
             bench.append(round(carry / bbase, 6) if carry is not None and bbase else None)
     return {"dates": dates, "strategy": strat, "benchmark": bench, "drawdown": dd}
+
+
+def relative_stats(strategy: Mapping[str, float], benchmark: Mapping[str, float],
+                   *, rf: float = 0.0) -> dict[str, Any]:
+    """相对类指标：对齐两序列共同日期后做日收益 OLS/超额。重叠 < 3 点 → 全 None。"""
+    common = sorted(set(strategy) & set(benchmark))
+    none = {"excess_return": None, "information_ratio": None, "beta": None,
+            "alpha": None, "tracking_error": None}
+    if len(common) < 3:
+        return none
+    sv = [float(strategy[d]) for d in common]
+    bv = [float(benchmark[d]) for d in common]
+    rs, rb = _returns(sv), _returns(bv)
+    if len(rs) != len(rb) or len(rs) < 2:
+        return none
+    n = len(rs)
+    ms, mb = _mean(rs), _mean(rb)
+    var_b = sum((b - mb) ** 2 for b in rb) / (n - 1)
+    cov = sum((a - ms) * (b - mb) for a, b in zip(rs, rb)) / (n - 1)
+    beta = cov / var_b if var_b > 0 else None
+    alpha = ((ms - rf / TRADING_DAYS) - beta * (mb - rf / TRADING_DAYS)) * TRADING_DAYS if beta is not None else None
+    diff = [a - b for a, b in zip(rs, rb)]
+    te = _std(diff) * math.sqrt(TRADING_DAYS)
+    return {
+        "excess_return": (sv[-1] / sv[0] - 1) - (bv[-1] / bv[0] - 1) if sv[0] and bv[0] else None,
+        "information_ratio": (_mean(diff) * TRADING_DAYS) / te if te > 0 else None,
+        "beta": beta,
+        "alpha": alpha,
+        "tracking_error": te,
+    }
+
+
+def _period_returns(series: Mapping[str, float], keylen: int) -> dict[str, list[float]]:
+    """日收益按期间分桶：r_i 归属其结束日所在期间（key = date[:keylen]）。"""
+    dates, values = _sorted_items(series)
+    out: dict[str, list[float]] = {}
+    for i in range(1, len(values)):
+        if values[i - 1]:
+            out.setdefault(dates[i][:keylen], []).append(values[i] / values[i - 1] - 1)
+    return out
+
+
+def period_stats(strategy: Mapping[str, float], benchmark: Mapping[str, float] | None,
+                 *, freq: str = "Y", rf: float = 0.0) -> list[dict[str, Any]]:
+    """年度(freq='Y')/月度(freq='M')统计：组收益=组内日收益连乘；回撤/波动/夏普按组内序列。"""
+    keylen = 4 if freq == "Y" else 7
+    sbuckets = _period_returns(strategy, keylen)
+    bbuckets = _period_returns(benchmark, keylen) if benchmark else {}
+    dates, values = _sorted_items(strategy)
+    rows: list[dict[str, Any]] = []
+    for period in sorted(sbuckets):
+        rets = sbuckets[period]
+        cum = 1.0
+        for r in rets:
+            cum *= 1 + r
+        sub_vals = [values[i] for i in range(len(values)) if dates[i][:keylen] == period]
+        std = _std(rets)
+        if std < _STD_EPS:  # 与 perf_stats 同口径：浮点噪声层面的“恒定收益”→ 按 std=0 处理
+            std = 0.0
+        brets = bbuckets.get(period)
+        bret = None
+        if brets:
+            bcum = 1.0
+            for r in brets:
+                bcum *= 1 + r
+            bret = bcum - 1
+        rows.append({
+            "period": period,
+            "strategy_return": cum - 1,
+            "benchmark_return": bret,
+            "excess": (cum - 1 - bret) if bret is not None else None,
+            "max_drawdown": _max_drawdown(sub_vals),
+            "volatility": std * math.sqrt(TRADING_DAYS) if len(rets) >= 2 else None,
+            "sharpe": ((_mean(rets) - rf / TRADING_DAYS) / std) * math.sqrt(TRADING_DAYS) if std > 0 else None,
+        })
+    return rows
