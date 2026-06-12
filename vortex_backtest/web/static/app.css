@@ -1,11 +1,12 @@
 :root{
   --bg:#ffffff;--surface:#f7f8fa;--border:#e3e6eb;--text:#1a1f29;--muted:#5b6472;
-  --accent:#1d4ed8;--profit:#166534;--loss:#b91c1c;--warn:#b45309;--running:#1d4ed8;--idle:#4b5563;
+  /* A 股口径：红涨(profit)绿跌(loss)，全文唯一定义来源 */
+  --accent:#1d4ed8;--profit:#cf222e;--loss:#1a7f37;--warn:#b45309;--running:#1d4ed8;--idle:#4b5563;
   --mono:ui-monospace,"SF Mono",Menlo,monospace;--radius:8px;
 }
 [data-theme=dark]{
   --bg:#0f1419;--surface:#1a212b;--border:#2b333f;--text:#e6e9ee;--muted:#9aa4b2;
-  --accent:#60a5fa;--profit:#4ade80;--loss:#f87171;--warn:#fbbf24;--running:#60a5fa;--idle:#9ca3af;
+  --accent:#60a5fa;--profit:#ff7b72;--loss:#3fb950;--warn:#fbbf24;--running:#60a5fa;--idle:#9ca3af;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"PingFang SC",Roboto,sans-serif}
@@ -69,6 +70,5 @@ tr.row:hover{background:var(--surface)}
 .section h2{font-size:15px;margin:0 0 10px}
 .gran-switch button{margin-right:6px;padding:4px 10px;border:1px solid #d0d7de;border-radius:6px;background:#fff;cursor:pointer}
 .gran-switch button.active{background:#0969da;color:#fff;border-color:#0969da}
-.profit{color:#cf222e}.loss{color:#1a7f37}
 details.rebalance{border:1px solid #d0d7de;border-radius:8px;padding:8px 12px;margin:8px 0}
 details.rebalance summary{cursor:pointer;font-weight:600}

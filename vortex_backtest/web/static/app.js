@@ -4,7 +4,7 @@
   var app = document.getElementById('app');
   var crumbs = document.getElementById('crumbs');
   var charts = [];
-  var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [] };
+  var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [], account: '' };
 
   function get(path) {
     return fetch(path).then(function (r) {
@@ -16,7 +16,7 @@
     app.innerHTML = '<div class="error-banner">后端不可达或数据缺失：' + esc(String(err && err.message || err)) +
       '<br>请确认服务在运行、会话存在；本看板不再展示演示数据。</div>';
   }
-  function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function pct(x) { return x == null ? '—' : ((x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%'); }
   function num(x, d) { return x == null ? '—' : Number(x).toFixed(d == null ? 2 : d); }
   function money(x) { return x == null ? '—' : Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -44,29 +44,54 @@
       return Promise.all(rows.map(function (r) {
         return get('/sessions/' + r.session_id + '/summary').then(function (s) { return { row: r, sum: s }; });
       })).then(function (items) {
-        var html = '<table class="kpi-table"><thead><tr><th>会话</th><th>账户</th><th>状态</th><th>区间</th>' +
-          '<th>总收益</th><th>最大回撤</th><th>总资产</th><th>更新时间</th></tr></thead><tbody>';
+        // 账户过滤走客户端：会话量小，切换下拉直接过滤已取回的行重渲染即可；
+        // 量大时应改为重新请求 GET /sessions?account_id= 走服务端过滤。
+        var accounts = [];
         items.forEach(function (it) {
-          var r = it.row, s = it.sum;
-          html += '<tr><td><a href="#/session/' + r.session_id + '">' + esc(r.session_id.slice(0, 8)) + '…</a></td>' +
-            '<td>' + esc(r.account_id) + '</td><td>' + esc(r.status) + '</td>' +
-            '<td>' + esc(r.start_date || '') + ' ~ ' + esc(r.end_date || '') + '</td>' +
-            '<td class="' + cls(s.total_return) + '">' + pct(s.total_return) + '</td>' +
-            '<td>' + pct(s.max_drawdown) + '</td><td>' + money(s.total_value) + '</td>' +
-            '<td>' + esc(String(r.updated_at || '').slice(0, 16).replace('T', ' ')) + '</td></tr>';
+          if (accounts.indexOf(it.row.account_id) < 0) { accounts.push(it.row.account_id); }
         });
-        document.getElementById('list').innerHTML = html + '</tbody></table>';
+        if (state.account && accounts.indexOf(state.account) < 0) { state.account = ''; }
+        renderListTable(items, accounts);
       });
     }).catch(fail);
   }
 
+  function renderListTable(items, accounts) {
+    var acctSel = '<label>账户 <select id="acct-sel"><option value="">全部账户</option>' +
+      accounts.map(function (a) {
+        return '<option value="' + esc(a) + '"' + (a === state.account ? ' selected' : '') + '>' + esc(a) + '</option>';
+      }).join('') + '</select></label>';
+    var shown = state.account
+      ? items.filter(function (it) { return it.row.account_id === state.account; }) : items;
+    var html = '<p>' + acctSel + '</p>' +
+      '<table class="kpi-table"><thead><tr><th>会话</th><th>账户</th><th>状态</th><th>区间</th>' +
+      '<th>总收益</th><th>最大回撤</th><th>总资产</th><th>更新时间</th></tr></thead><tbody>';
+    shown.forEach(function (it) {
+      var r = it.row, s = it.sum;
+      html += '<tr><td><a href="#/session/' + esc(r.session_id) + '">' + esc(r.session_id.slice(0, 8)) + '…</a></td>' +
+        '<td>' + esc(r.account_id) + '</td><td>' + esc(r.status) + '</td>' +
+        '<td>' + esc(r.start_date || '') + ' ~ ' + esc(r.end_date || '') + '</td>' +
+        '<td class="' + cls(s.total_return) + '">' + pct(s.total_return) + '</td>' +
+        '<td>' + pct(s.max_drawdown) + '</td><td>' + money(s.total_value) + '</td>' +
+        '<td>' + esc(String(r.updated_at || '').slice(0, 16).replace('T', ' ')) + '</td></tr>';
+    });
+    document.getElementById('list').innerHTML = html + '</tbody></table>';
+    document.getElementById('acct-sel').addEventListener('change', function (e) {
+      state.account = e.target.value;
+      renderListTable(items, accounts);
+    });
+  }
+
   // ---------------- 详情页 ----------------
   function renderDetail(sid) {
+    destroyCharts(); // 基准下拉/粒度按钮/日期输入直调本函数不经 route，旧 Chart 实例须先销毁，否则被 Chart.js registry 持有泄漏
     crumbs.innerHTML = '<a href="#/">会话列表</a> / ' + esc(sid.slice(0, 8)) + '…';
     app.innerHTML = '<div class="section">加载中…</div>';
     var benchQ = '?benchmark=' + encodeURIComponent(state.benchmark);
+    // hourly/minute 快照行多：默认 limit=500 取的是最前 500 行，slice(-30) 就不是"最近"；提到后端上限 5000。daily/weekly 量小不需要。
     var posQ = '?granularity=' + state.gran +
-      (state.gran === 'minute' ? '&date=' + encodeURIComponent(state.minuteDate) : '');
+      (state.gran === 'minute' ? '&date=' + encodeURIComponent(state.minuteDate) : '') +
+      (state.gran === 'hourly' || state.gran === 'minute' ? '&limit=5000' : '');
     Promise.all([
       get('/sessions/' + sid),
       state.benchmarks.length ? Promise.resolve(state.benchmarks) : get('/benchmarks'),
