@@ -20,6 +20,8 @@ HTTP 协议层(sessions) + A 股分钟撮合/规则内核 + data 取数网关(PI
 - `POST /sessions/{id}/data` 策略取数（透传 data 网关，服务端用会话 `sim_time` 当 `as_of`，不信客户端时间）
 - `POST /sessions/{id}/close` 关闭会话出最终报告
 - `GET /sessions/{id}/summary|daily|trades|rejections|minutes` 报告（会话期间即可读当前累积态）
+- `GET /sessions/{id}/metrics|equity|positions|rebalances`、`GET /benchmarks` 分析报告层：
+  基准对比指标（夏普/回撤/IR/Beta/Alpha）、年度月度统计、多粒度持仓（日/周/时/分）、调仓记录
 - `GET /symbols/{symbol}` Tushare/MiniQMT/Vortex 统一代码与板块规则
 - `/ui` 看板、`/guide` 文档站、`/docs` Swagger
 

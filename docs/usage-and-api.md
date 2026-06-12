@@ -159,6 +159,11 @@ curl -s $B/sessions/$SID/summary
 | GET | `/sessions/{id}/trades?symbol=&limit=&offset=` | 成交 |
 | GET | `/sessions/{id}/rejections?limit=&offset=` | 拒单 |
 | GET | `/sessions/{id}/minutes?limit=&offset=` | 逐步快照（时间戳/现金/市值/总值） |
+| GET | `/sessions/{id}/metrics?benchmark=&rf=` | 指标包：绝对/基准/相对(夏普/回撤/IR/Beta/Alpha) + 年度月度统计（行键 `period`） |
+| GET | `/sessions/{id}/equity?benchmark=` | 起点 1.0 对齐净值曲线 + 逐日回撤（含期初本金基线点） |
+| GET | `/sessions/{id}/positions?granularity=daily\|weekly\|hourly\|minute&date=` | 多粒度持仓快照（含权重；minute 须带 date） |
+| GET | `/sessions/{id}/rebalances?limit=&offset=` | 调仓事件（按日聚合买卖 + 前后持仓 diff + 费用） |
+| GET | `/benchmarks` | 可选基准目录（常用指数 + 申万行业全量） |
 
 ---
 
