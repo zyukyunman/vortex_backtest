@@ -412,6 +412,101 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         except GatewayDataError as exc:
             raise HTTPException(status_code=502, detail={"error": "gateway_error", "detail": str(exc)}) from exc
 
+    # ------------------------------------------------------------------
+    # 分析/报告层（spec 2026-06-12：metrics/equity/positions/rebalances/benchmarks）
+    # ------------------------------------------------------------------
+    from . import analytics
+    from .benchmark import list_benchmarks as _list_benchmarks
+    from .benchmark import load_series as _load_benchmark
+
+    def _daily_rows(data_store: DataStore, session_id: str) -> list[dict]:
+        return _session_summary(data_store, session_id).get("daily", [])
+
+    def _strategy_series(daily_rows: list[dict]) -> dict[str, float]:
+        return {str(r["trade_date"]): float(r["total_value"]) for r in daily_rows}
+
+    def _benchmark_for(row: dict, code: str) -> tuple[dict[str, float], str]:
+        start = int(str(row["start_date"]).replace("-", "")) if row.get("start_date") else 0
+        end = int(str(row["end_date"]).replace("-", "")) if row.get("end_date") else 99999999
+        return _load_benchmark(code, start, end)
+
+    @app.get("/sessions/{session_id}/metrics")
+    def session_metrics(
+        session_id: str,
+        benchmark: str = Query(default="000300.SH"),
+        rf: float = Query(default=0.0, ge=0.0, le=1.0),
+        data_store: DataStore = Depends(get_store),
+    ) -> dict:
+        row = _session_or_404(data_store, session_id)
+        strat = _strategy_series(_daily_rows(data_store, session_id))
+        bench, bench_name = _benchmark_for(row, benchmark)
+        out = {
+            "benchmark": benchmark,
+            "benchmark_name": bench_name,
+            "low_confidence": len(strat) < analytics.LOW_CONFIDENCE_DAYS,
+            "strategy": analytics.perf_stats(strat, rf=rf),
+            "benchmark_stats": analytics.perf_stats(bench, rf=rf) if bench else None,
+            "relative": analytics.relative_stats(strat, bench, rf=rf) if bench else None,
+            "annual": analytics.period_stats(strat, bench or None, freq="Y", rf=rf),
+            "monthly": analytics.period_stats(strat, bench or None, freq="M", rf=rf),
+        }
+        if not bench:
+            out["error"] = "benchmark_data_missing"
+        return out
+
+    @app.get("/sessions/{session_id}/equity")
+    def session_equity(
+        session_id: str,
+        benchmark: str = Query(default="000300.SH"),
+        data_store: DataStore = Depends(get_store),
+    ) -> dict:
+        row = _session_or_404(data_store, session_id)
+        strat = _strategy_series(_daily_rows(data_store, session_id))
+        bench, _ = _benchmark_for(row, benchmark)
+        return analytics.equity_curve(strat, bench or None)
+
+    @app.get("/sessions/{session_id}/positions")
+    def session_positions(
+        session_id: str,
+        granularity: str = Query(default="daily"),
+        date: str | None = Query(default=None),
+        week: str | None = Query(default=None),
+        limit: int = Query(default=500, ge=1, le=5000),
+        offset: int = Query(default=0, ge=0),
+        data_store: DataStore = Depends(get_store),
+    ) -> list[dict]:
+        _session_or_404(data_store, session_id)
+        if granularity not in ("daily", "weekly", "hourly", "minute"):
+            raise HTTPException(status_code=422, detail={"error": "invalid_granularity"})
+        if granularity in ("daily", "weekly"):
+            rows = _daily_rows(data_store, session_id)
+            views = analytics.daily_views(rows) if granularity == "daily" else analytics.weekly_views(rows)
+            if week:
+                views = [v for v in views if v.get("week") == week]
+        else:
+            if granularity == "minute" and not date:
+                raise HTTPException(status_code=422, detail={"error": "date_required_for_minute"})
+            snaps = _read_jsonl(_session_dir(data_store, session_id) / "snapshots.jsonl")
+            if date:
+                snaps = [s for s in snaps if str(s["timestamp"])[:10] == date]
+            views = (analytics.minute_views(snaps) if granularity == "minute"
+                     else analytics.hourly_views(snaps))
+        if date and granularity in ("daily", "weekly"):
+            views = [v for v in views if str(v["timestamp"])[:10] == date]
+        return views[offset:offset + limit]
+
+    @app.get("/sessions/{session_id}/rebalances")
+    def session_rebalances(
+        session_id: str, data_store: DataStore = Depends(get_store)
+    ) -> list[dict]:
+        _session_or_404(data_store, session_id)
+        trades = _read_jsonl(_session_dir(data_store, session_id) / "trades.jsonl")
+        return analytics.rebalance_events(trades, _daily_rows(data_store, session_id))
+
+    @app.get("/benchmarks")
+    def benchmarks() -> list[dict]:
+        return _list_benchmarks()
+
     # 托管只读看板（P5 壳）：/ui/ 提供静态 SPA，/ 重定向到看板。
     web_dir = Path(__file__).resolve().parent / "web"
     if web_dir.exists():
