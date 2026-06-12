@@ -433,9 +433,13 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
             series[baseline] = float(row["initial_cash"])
         return series
 
-    def _benchmark_for(row: dict, code: str) -> tuple[dict[str, float], str]:
+    def _benchmark_for(row: dict, code: str, end_cap: str | None = None) -> tuple[dict[str, float], str]:
+        # end_cap：基准窗口上界夹到策略 daily 实际走到的最后交易日——open/提前 close 的会话
+        # 不得让基准统计覆盖策略未走到的日子（否则 benchmark_stats/relative 与策略口径错位）。
         start = int(str(row["start_date"]).replace("-", "")) if row.get("start_date") else 0
         end = int(str(row["end_date"]).replace("-", "")) if row.get("end_date") else 99999999
+        if end_cap:
+            end = min(end, int(str(end_cap).replace("-", "")))
         return _load_benchmark(code, start, end)
 
     @app.get("/sessions/{session_id}/metrics")
@@ -448,7 +452,8 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         row = _session_or_404(data_store, session_id)
         daily = _daily_rows(data_store, session_id)
         strat = _strategy_series(row, daily)
-        bench, bench_name = _benchmark_for(row, benchmark)
+        bench, bench_name = _benchmark_for(
+            row, benchmark, end_cap=str(daily[-1]["trade_date"]) if daily else None)
         out = {
             "benchmark": benchmark,
             "benchmark_name": bench_name,
@@ -471,8 +476,11 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         data_store: DataStore = Depends(get_store),
     ) -> dict:
         row = _session_or_404(data_store, session_id)
-        strat = _strategy_series(row, _daily_rows(data_store, session_id))
-        bench, _ = _benchmark_for(row, benchmark)
+        daily = _daily_rows(data_store, session_id)
+        strat = _strategy_series(row, daily)
+        # equity 按策略轴对齐本不受窗口上界影响，但同样传 end_cap：少读数据且与 metrics 口径一致。
+        bench, _ = _benchmark_for(
+            row, benchmark, end_cap=str(daily[-1]["trade_date"]) if daily else None)
         return analytics.equity_curve(strat, bench or None)
 
     @app.get("/sessions/{session_id}/positions")
@@ -491,7 +499,8 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         if granularity in ("daily", "weekly"):
             rows = _daily_rows(data_store, session_id)
             views = analytics.daily_views(rows) if granularity == "daily" else analytics.weekly_views(rows)
-            if week:
+            # week 过滤仅 weekly 粒度生效：daily 行无 week 键，带 week 参数时忽略而非静默空表。
+            if week and granularity == "weekly":
                 views = [v for v in views if v.get("week") == week]
         else:
             if granularity == "minute" and not date:
@@ -507,11 +516,15 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
 
     @app.get("/sessions/{session_id}/rebalances")
     def session_rebalances(
-        session_id: str, data_store: DataStore = Depends(get_store)
+        session_id: str,
+        limit: int = Query(default=500, ge=1, le=5000),
+        offset: int = Query(default=0, ge=0),
+        data_store: DataStore = Depends(get_store),
     ) -> list[dict]:
         _session_or_404(data_store, session_id)
         trades = _read_jsonl(_session_dir(data_store, session_id) / "trades.jsonl")
-        return analytics.rebalance_events(trades, _daily_rows(data_store, session_id))
+        events = analytics.rebalance_events(trades, _daily_rows(data_store, session_id))
+        return events[offset:offset + limit]
 
     @app.get("/benchmarks")
     def benchmarks() -> list[dict]:

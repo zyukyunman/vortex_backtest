@@ -50,11 +50,13 @@
   "benchmark_stats": {同上结构},     // 基准缺数 → null + "benchmark_data_missing"
   "relative":  {"excess_return":…, "information_ratio":…, "beta":…, "alpha":…,
                 "tracking_error":…},
-  "annual":  [{"year":2026, "strategy_return":…, "benchmark_return":…, "excess":…,
+  "annual":  [{"period":"2026", "strategy_return":…, "benchmark_return":…, "excess":…,
                "max_drawdown":…, "benchmark_max_drawdown":…, "volatility":…, "sharpe":…}],
-  "monthly": [{"month":"2026-02", 同 annual 字段}]
+  "monthly": [{"period":"2026-02", 同 annual 字段}]
 }
 ```
+
+> 拍板（2026-06-12 评审）：年月行统一用 period 字符串键（"2026"/"2026-02"），不用 year/month 异构键。
 
 ### 4.2 `GET /sessions/{id}/equity?benchmark=`
 

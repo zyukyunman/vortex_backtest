@@ -42,7 +42,9 @@ def load_series(code: str, start_key: int, end_key: int, *,
         df = df[df["symbol"] == code].copy()
         if df.empty:
             continue
-        df["_d"] = df["date"].astype(str).str[:8].astype(int)
+        df["_d"] = pd.to_numeric(df["date"].astype(str).str.replace("-", "", regex=False).str[:8],
+                                 errors="coerce")
+        df = df.dropna(subset=["_d"]).astype({"_d": int})
         df = df[(df["_d"] >= start_key) & (df["_d"] <= end_key)].sort_values("_d")
         series = {f"{str(k)[:4]}-{str(k)[4:6]}-{str(k)[6:8]}": float(c)
                   for k, c in zip(df["_d"], df["close"])}

@@ -10,6 +10,38 @@ from vortex_backtest.models import AccountCreate
 from vortex_backtest.store import DataStore
 
 SID = "rpt-test-session"
+SID_SHORT = "rpt-short-session"   # calendar 只写 0203/0204 的窄会话（验证基准窗口夹断）
+
+
+def _pos(qty, mv):
+    return [{"strategy_id": "t", "symbol": "000001.SZ", "quantity": qty,
+             "available_quantity": qty, "cost_basis": 10.0,
+             "last_price": mv / qty if qty else 0.0, "market_value": mv,
+             "unrealized_pnl": 0.0, "unrealized_pnl_ratio": 0.0}] if qty else []
+
+
+def _snap(ts, cash, mv):
+    return {"strategy_id": "t", "timestamp": ts, "frequency": "1min",
+            "cash": cash, "market_value": mv, "total_value": cash + mv,
+            "positions": _pos(10 if mv else 0, mv), "trades": [], "rejections": []}
+
+
+def _write_jsonl(path, rows):
+    with open(path, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+
+def _seed_session(state, store, session_id, *, snaps, trades, cal_days):
+    """建会话行 + 落 JSONL 产物（snapshots/trades/calendar），多会话复用。"""
+    store.create_session(session_id=session_id, account_id="acct", level="1min",
+                         start_date="2026-02-03", end_date="2026-02-05", sim_time=None,
+                         initial_cash=1000.0, universe=["000001.SZ"], config={"strategy_id": "t"})
+    sdir = state / "reports" / "sessions" / session_id
+    sdir.mkdir(parents=True)
+    _write_jsonl(sdir / "snapshots.jsonl", snaps)
+    _write_jsonl(sdir / "trades.jsonl", trades)
+    _write_jsonl(sdir / "calendar.jsonl", [{"d": d} for d in cal_days])
 
 
 @pytest.fixture
@@ -27,28 +59,11 @@ def client(tmp_path, monkeypatch):
     state = tmp_path / "state"
     store = DataStore(state)
     store.create_account(AccountCreate(account_id="acct", initial_cash=1000.0))
-    store.create_session(session_id=SID, account_id="acct", level="1min",
-                         start_date="2026-02-03", end_date="2026-02-05", sim_time=None,
-                         initial_cash=1000.0, universe=["000001.SZ"], config={"strategy_id": "t"})
 
-    def pos(qty, mv):
-        return [{"strategy_id": "t", "symbol": "000001.SZ", "quantity": qty,
-                 "available_quantity": qty, "cost_basis": 10.0,
-                 "last_price": mv / qty if qty else 0.0, "market_value": mv,
-                 "unrealized_pnl": 0.0, "unrealized_pnl_ratio": 0.0}] if qty else []
-
-    sdir = state / "reports" / "sessions" / SID
-    sdir.mkdir(parents=True)
     snaps = [
-        {"strategy_id": "t", "timestamp": "2026-02-03T09:31:00", "frequency": "1min",
-         "cash": 900.0, "market_value": 100.0, "total_value": 1000.0,
-         "positions": pos(10, 100.0), "trades": [], "rejections": []},
-        {"strategy_id": "t", "timestamp": "2026-02-03T15:00:00", "frequency": "1min",
-         "cash": 900.0, "market_value": 110.0, "total_value": 1010.0,
-         "positions": pos(10, 110.0), "trades": [], "rejections": []},
-        {"strategy_id": "t", "timestamp": "2026-02-04T15:00:00", "frequency": "1min",
-         "cash": 1012.0, "market_value": 0.0, "total_value": 1012.0,
-         "positions": [], "trades": [], "rejections": []},
+        _snap("2026-02-03T09:31:00", 900.0, 100.0),
+        _snap("2026-02-03T15:00:00", 900.0, 110.0),
+        _snap("2026-02-04T15:00:00", 1012.0, 0.0),
     ]
     trades = [
         {"strategy_id": "t", "trade_id": "t-1", "request_id": "b1", "trade_date": "2026-02-03",
@@ -60,15 +75,11 @@ def client(tmp_path, monkeypatch):
          "quantity": 10, "price": 11.2, "amount": 112.0, "commission": 5.0,
          "stamp_tax": 0.056, "transfer_fee": 0.001, "realized_pnl": 2.0, "cash_after": 1012.0},
     ]
-    with open(sdir / "snapshots.jsonl", "w") as fh:
-        for r in snaps:
-            fh.write(json.dumps(r) + "\n")
-    with open(sdir / "trades.jsonl", "w") as fh:
-        for r in trades:
-            fh.write(json.dumps(r) + "\n")
-    with open(sdir / "calendar.jsonl", "w") as fh:
-        for d in (20260203, 20260204, 20260205):
-            fh.write(json.dumps({"d": d}) + "\n")
+    _seed_session(state, store, SID, snaps=snaps, trades=trades,
+                  cal_days=(20260203, 20260204, 20260205))
+    # 窄会话：end_date 仍是 0205，但 calendar/快照只到 0204 → 策略 daily 止于 0204。
+    _seed_session(state, store, SID_SHORT, snaps=snaps, trades=trades,
+                  cal_days=(20260203, 20260204))
     return TestClient(create_app(state_dir=state))
 
 
@@ -90,6 +101,14 @@ def test_metrics_benchmark_missing_degrades(client):
     assert m["benchmark_stats"] is None and m["relative"] is None
     assert m["error"] == "benchmark_data_missing"
     assert m["strategy"]["total_return"] == pytest.approx(0.012)   # 绝对类照常(对 initial_cash)
+
+
+def test_metrics_benchmark_window_capped_to_strategy_last_day(client):
+    # 窄会话策略 daily 只到 0204：基准 0205 行须被夹掉（open/提前 close 的会话
+    # 不得让基准统计覆盖策略未走到的日子），n_days 只数 0203/0204 两天。
+    m = client.get(f"/sessions/{SID_SHORT}/metrics?benchmark=000300.SH").json()
+    assert m["benchmark_stats"]["n_days"] == 2
+    assert m["benchmark_stats"]["total_return"] == pytest.approx(4040.0 / 4000.0 - 1, rel=1e-9)
 
 
 def test_equity_curve(client):
@@ -117,13 +136,35 @@ def test_positions_granularities(client):
     assert client.get(f"/sessions/{SID}/positions?granularity=nope").status_code == 422
 
 
+def test_positions_minute_pagination(client):
+    rows = client.get(
+        f"/sessions/{SID}/positions?granularity=minute&date=2026-02-03&limit=1&offset=1").json()
+    assert len(rows) == 1 and rows[0]["timestamp"] == "2026-02-03T15:00:00"
+
+
+def test_positions_week_filter_only_applies_to_weekly(client):
+    # daily 粒度带 week 参数：忽略而非静默空表
+    daily = client.get(f"/sessions/{SID}/positions?granularity=daily&week=2026-W06").json()
+    assert [d["timestamp"] for d in daily] == ["2026-02-03", "2026-02-04", "2026-02-05"]
+
+
 def test_rebalances(client):
     ev = client.get(f"/sessions/{SID}/rebalances").json()
     assert [e["trade_date"] for e in ev] == ["2026-02-03", "2026-02-04"]
     assert ev[0]["buys"][0]["avg_price"] == pytest.approx(10.0)
+    assert ev[0]["fees_total"] == pytest.approx(5.001)              # 5.0 + 0 + 0.001
+    assert ev[1]["realized_pnl_total"] == pytest.approx(2.0)
+    assert ev[1]["fees_total"] == pytest.approx(5.057)              # 5.0 + 0.056 + 0.001
     assert ev[0]["position_diff"][0]["qty_before"] == 0
     assert ev[0]["position_diff"][0]["qty_after"] == 10
     assert ev[1]["position_diff"][0]["qty_after"] == 0
+
+
+def test_rebalances_pagination(client):
+    ev = client.get(f"/sessions/{SID}/rebalances?limit=1").json()
+    assert len(ev) == 1 and ev[0]["trade_date"] == "2026-02-03"
+    ev2 = client.get(f"/sessions/{SID}/rebalances?limit=1&offset=1").json()
+    assert len(ev2) == 1 and ev2[0]["trade_date"] == "2026-02-04"
 
 
 def test_benchmarks_catalog(client):
