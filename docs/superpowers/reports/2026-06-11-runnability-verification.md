@@ -98,9 +98,12 @@ workspace 共 **57 个数据集**，日频面覆盖完整且新鲜（多数 2026
 
 ## 5a. 本仓后续行动项（超出本 session 范围，另开 session）
 
-1. **`/ui` 看板对齐 sessions API**：`web/static/app.js` 仍面向已删的作业/策略中心/排行榜端点
-   （state 含 jobId/leaderboard，调 `/backtests`、`/strategies` 等），现靠 mock 回退兜底显示；
-   `web/guide.html` 静态文档站同期产物，内容同样陈旧。
+1. ~~`/ui` 看板对齐 sessions API~~ → **已完成（2026-06-13，spec 2026-06-12 看板+分析报告层）**：
+   看板重写为会话列表/详情两页（mock 全删），新增 analytics/benchmark 模块与 5 个报告端点
+   （metrics/equity/positions/rebalances/benchmarks）：基准对比指标、年月统计、日/周/时/分
+   多粒度持仓、调仓记录。测试 176 passed；真实会话容器+venv 双形态验证通过。
+   残留：`web/guide.html` 静态文档站仍是旧内容（二期）；Docker Desktop 宿主机崩溃，
+   新前端的容器镜像待 Docker 恢复后 `vortex run up backtest` 重建（代码已在 main）。
 2. **`scripts/reconcile_statement.py` 适配会话产物**：现读旧作业的 `account_summary.json`，
    会话 close 产物为 `reports/sessions/<id>/summary.json`，字段兼容性未验。
 3. **`docs_site.py` 疑似死代码**：app.py 的 /guide 已改读静态 `web/guide.html`，
