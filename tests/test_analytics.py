@@ -83,3 +83,52 @@ def test_period_stats_monthly_split():
     # 02 月：r(02-02)=1%、r(02-03)=-2% → (1.01*0.98)-1
     assert rows[1]["strategy_return"] == pytest.approx(1.01 * 0.98 - 1, rel=1e-9)
     assert rows[1]["benchmark_return"] is None and rows[1]["max_drawdown"] <= 0
+
+
+def _mk_pos(symbol, qty, mv):
+    return {"strategy_id": "t", "symbol": symbol, "quantity": qty, "available_quantity": qty,
+            "cost_basis": 10.0, "last_price": mv / qty if qty else 0, "market_value": mv,
+            "unrealized_pnl": 0.0, "unrealized_pnl_ratio": 0.0}
+
+
+def _mk_daily(trade_date, cash, mv, positions):
+    return {"strategy_id": "t", "trade_date": trade_date, "cash": cash, "market_value": mv,
+            "total_value": cash + mv, "daily_pnl": 0, "total_return": 0, "drawdown": 0,
+            "positions": positions, "trades": [], "rejections": []}
+
+
+def _mk_snap(ts, cash, mv, positions):
+    return {"strategy_id": "t", "timestamp": ts, "frequency": "1min", "cash": cash,
+            "market_value": mv, "total_value": cash + mv, "positions": positions,
+            "trades": [], "rejections": []}
+
+
+def test_daily_views_weight():
+    rows = [_mk_daily("2026-02-03", 900.0, 100.0, [_mk_pos("000001.SZ", 10, 100.0)])]
+    views = analytics.daily_views(rows)
+    assert views[0]["timestamp"] == "2026-02-03"
+    assert views[0]["positions"][0]["weight"] == pytest.approx(0.1)
+
+
+def test_weekly_views_last_trading_day_of_week():
+    # 02-03(周二)/02-06(周五) 同属 2026-W06；02-09(周一) 属 W07 → 每周留最后一行
+    rows = [_mk_daily("2026-02-03", 1000, 0, []), _mk_daily("2026-02-06", 1100, 0, []),
+            _mk_daily("2026-02-09", 1200, 0, [])]
+    views = analytics.weekly_views(rows)
+    assert [(v["week"], v["timestamp"]) for v in views] == [("2026-W06", "2026-02-06"), ("2026-W07", "2026-02-09")]
+
+
+def test_hourly_views_buckets():
+    snaps = [_mk_snap("2026-02-03T09:31:00", 1, 0, []), _mk_snap("2026-02-03T10:30:00", 2, 0, []),
+             _mk_snap("2026-02-03T11:29:00", 3, 0, []), _mk_snap("2026-02-03T14:55:00", 4, 0, []),
+             _mk_snap("2026-02-03T15:00:00", 5, 0, [])]
+    views = analytics.hourly_views(snaps)
+    # (≤10:30]=cash2、(10:30,11:30]=cash3、(14:00,15:00] 桶内最后一根=15:00 的 cash5
+    assert [(v["timestamp"], v["cash"]) for v in views] == [
+        ("2026-02-03T10:30:00", 2), ("2026-02-03T11:30:00", 3), ("2026-02-03T15:00:00", 5)]
+
+
+def test_minute_views_passthrough():
+    snaps = [_mk_snap("2026-02-03T09:31:00", 990.0, 10.0, [_mk_pos("000001.SZ", 1, 10.0)])]
+    v = analytics.minute_views(snaps)
+    assert v[0]["timestamp"] == "2026-02-03T09:31:00" and v[0]["positions"][0]["weight"] == pytest.approx(0.01)

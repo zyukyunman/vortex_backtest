@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import math
-from datetime import date  # noqa: F401  (Task 3/6 调仓记录/多粒度持仓使用)
+from datetime import date
 from typing import Any, Mapping
 
 TRADING_DAYS = 252
@@ -167,3 +167,52 @@ def period_stats(strategy: Mapping[str, float], benchmark: Mapping[str, float] |
             "sharpe": ((_mean(rets) - rf / TRADING_DAYS) / std) * math.sqrt(TRADING_DAYS) if std > 0 else None,
         })
     return rows
+
+
+def _snapshot_view(row: Mapping[str, Any], *, timestamp: str) -> dict[str, Any]:
+    """统一持仓快照视图：补每标的 weight（市值/总资产）。"""
+    total = float(row.get("total_value") or 0.0)
+    positions = []
+    for p in row.get("positions") or []:
+        q = dict(p)
+        q["weight"] = round(float(p["market_value"]) / total, 6) if total else None
+        positions.append(q)
+    return {"timestamp": timestamp, "cash": row.get("cash"),
+            "market_value": row.get("market_value"), "total_value": row.get("total_value"),
+            "positions": positions}
+
+
+def daily_views(daily_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [_snapshot_view(r, timestamp=str(r["trade_date"])) for r in daily_rows]
+
+
+def weekly_views(daily_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """每 ISO 周最后一个交易日的 EOD 行（输入按 trade_date 升序）。"""
+    by_week: dict[str, Mapping[str, Any]] = {}
+    for r in daily_rows:
+        d = date.fromisoformat(str(r["trade_date"]))
+        iso = d.isocalendar()
+        by_week[f"{iso.year}-W{iso.week:02d}"] = r  # 升序输入 → 留每周最后一行
+    return [dict(_snapshot_view(r, timestamp=str(r["trade_date"])), week=wk)
+            for wk, r in sorted(by_week.items())]
+
+
+_HOUR_BUCKETS = ("10:30:00", "11:30:00", "14:00:00", "15:00:00")
+
+
+def hourly_views(snapshot_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """每 (交易日, 小时档) 取该档窗口内最后一根 bar：(≤10:30]、(10:30,11:30]、(13:00,14:00]、(14:00,15:00]。"""
+    out: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for r in snapshot_rows:  # 升序
+        ts = str(r["timestamp"])
+        d, t = ts[:10], ts[11:19]
+        for i, b in enumerate(_HOUR_BUCKETS):
+            lo = _HOUR_BUCKETS[i - 1] if i else "00:00:00"
+            if lo < t <= b:
+                out[(d, b)] = r
+                break
+    return [_snapshot_view(r, timestamp=f"{d}T{b}") for (d, b), r in sorted(out.items())]
+
+
+def minute_views(snapshot_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [_snapshot_view(r, timestamp=str(r["timestamp"])) for r in snapshot_rows]
