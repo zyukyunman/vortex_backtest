@@ -13,10 +13,10 @@ The goal is to BREAK the design's PIT / accounting / graceful-degradation
 invariants on inputs that only show up on real data:
 
 - A position held across the 2026-06-08 ex-day (adj_factor jump) on 000630.SZ:
-  RAW price drops 6.49 -> 5.93, and the real dividend dataset has NO ``ex_date``
-  column so the N8 corporate-action credit is DORMANT. Assert NAV stays
-  continuous (no insufficient_cash blowup) and nothing crashes, while
-  DOCUMENTING the unbacked NAV gap that RAW-without-N8 leaves.
+  RAW price drops 6.49 -> 5.93. The real dividend dataset now carries
+  ``ex_date``/``effective_from``（2026-06-11 重抓后），so the N8 corporate-action
+  credit is ACTIVE: assert NAV stays continuous (no insufficient_cash blowup)
+  AND the ex-day cash dividend (~qty × cash_div_tax) is credited exactly once.
 - A suspended symbol (000004.SZ on 2026-05-06) cannot be traded that day.
 - ``symbols:"universe"`` expands and the REAL gateway only returns rows
   ``<= sim_time`` (a same-day daily close is NOT visible intraday).
@@ -203,11 +203,12 @@ def _mk_session(client: TestClient, account_id: str, universe: list[str], start:
 def test_exday_position_nav_continuous_no_insufficient_cash(bt_client):
     """Hold 000630.SZ across the 2026-06-08 ex-day; RAW close drops ~9%.
 
-    With RAW pricing and a real dividend dataset that has NO ex_date (N8 dormant),
-    we must NOT see an insufficient_cash blowup or a crash. We BUY on 20260605
-    (this_bar @ 15:00 close ~6.49), then advance over the ex-day. The held
-    position's market value drops on 20260608 RAW close; NAV must stay finite,
-    positive, and continuous (no exception, no negative cash).
+    With RAW pricing and a real dividend dataset that now HAS ex_date
+    (re-fetched 2026-06-11, N8 active), we must NOT see an insufficient_cash
+    blowup or a crash. We BUY on 20260605 (this_bar @ 15:00 close ~6.49), then
+    advance over the ex-day. The held position's market value drops on 20260608
+    RAW close; NAV must stay finite, positive, and continuous, and the ex-day
+    cash dividend must be credited exactly once.
     """
     client = bt_client
     aid = _mk_account(client, cash=1_000_000.0)
@@ -241,8 +242,12 @@ def test_exday_position_nav_continuous_no_insufficient_cash(bt_client):
     # small fraction of total (position is a tiny slice of 1M cash).
     assert abs(nav_after - nav_before) < nav_before * 0.5
 
-    # N8 is DORMANT on real data (dividend lacks ex_date) => no corporate action.
-    assert ctx2.get("corporate_actions") == [], ctx2.get("corporate_actions")
+    # N8 ACTIVE on real data (dividend re-fetched with ex_date 2026-06-11):
+    # the 20260608 ex-day credit fires exactly once for the held 1000 shares.
+    cas = ctx2.get("corporate_actions") or []
+    assert [c["symbol"] for c in cas] == [EXDAY_SYMBOL], cas
+    assert cas[0]["ex_date"] == 20260608, cas
+    assert cas[0]["cash_dividend"] == pytest.approx(1000 * 0.05, abs=1.0), cas
 
     # Close cleanly.
     rc = client.post(f"/sessions/{sid}/close")
@@ -252,18 +257,13 @@ def test_exday_position_nav_continuous_no_insufficient_cash(bt_client):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_exday_raw_leaves_unbacked_nav_gap(bt_client):
-    """DOCUMENT the design gap: RAW pricing without N8 credit on a real ex-day
-    leaves a phantom NAV drop equal to the dividend that was never credited.
+    """Real-account expectation on a real ex-day: the cash dividend IS credited.
 
     On 000630.SZ the real cash dividend is cash_div_tax=0.05/share. Holding
-    1000 shares, a faithful account would gain ~50 cash on the ex-day to offset
-    the price drop. Because the real dividend has no ex_date, load_dividends->[]
-    and NO cash is credited. We measure the position MV drop across the ex-day
-    and assert that NO compensating cash appeared.
-
-    This test asserts the CORRECT real-account expectation (cash should rise by
-    ~qty*cash_div_tax). On the current RAW-only path that does not happen, so it
-    is marked xfail to capture the gap as a documented, reproducible defect.
+    1000 shares across the 20260608 ex-day, N8 must credit ~50 cash to offset
+    the RAW price drop. 历史注记：曾为 xfail(BUG-RAWGAP)——当时 dividend 落盘缺
+    ex_date 列、load_dividends->[] 入账休眠；2026-06-11 数据重抓补齐 ex_date 后
+    该缺陷由数据侧修复，本测试转为正向断言。
     """
     client = bt_client
     aid = _mk_account(client, cash=1_000_000.0)
@@ -283,23 +283,12 @@ def test_exday_raw_leaves_unbacked_nav_gap(bt_client):
     cash_after_exday = r2.json()["cash"]
 
     # No new trades across the ex-day => the only way cash changes is a dividend
-    # credit. A faithful real account would credit ~ qty*cash_div_tax = 1000*0.05.
+    # credit. A faithful real account credits ~ qty*cash_div_tax = 1000*0.05.
     cash_credited = cash_after_exday - cash_after_buy
-
-    # CORRECT behavior: real account credits the cash dividend on ex-day.
     assert cash_credited == pytest.approx(1000 * 0.05, abs=1.0), (
-        "ex-day cash dividend not credited under RAW-only path "
+        "ex-day cash dividend not credited "
         f"(credited={cash_credited}); expected ~50.0"
     )
-
-
-# Mark the documented-gap test xfail (it asserts intended N8 behavior that the
-# RAW-only real-data path does not deliver because the dividend lacks ex_date).
-test_exday_raw_leaves_unbacked_nav_gap = pytest.mark.xfail(
-    reason="BUG-RAWGAP: real dividend has no ex_date so N8 credit is dormant; "
-           "RAW price drop on ex-day is uncompensated cash (NAV gap).",
-    strict=False,
-)(test_exday_raw_leaves_unbacked_nav_gap)
 
 
 # ===========================================================================
@@ -467,35 +456,30 @@ def test_inprocess_adj_factor_exday_visible_at_open_not_leak():
 
 
 def test_inprocess_load_dividends_contract_on_real_data():
-    """gateway_adapter.load_dividends documents (gateway_adapter.py:167-206) that
-    it returns [] when the dividend dataset has no ex_date column (graceful
-    degradation). On the REAL workspace the dividend dataset HAS no ex_date, but
-    the gateway routes the field-list request to read_window which raises
-    KeyError('字段不存在: ex_date') -> 400 bad_request -> GatewayDataError, so
-    load_dividends RAISES instead of returning [].
+    """load_dividends 现行契约在真实数据上的正向验证（dividend 已含 ex_date）。
 
-    This asserts the CORRECT/intended contract (return []); it currently fails
-    because the missing-column path errors out before the dataframe is inspected.
-    Marked xfail to capture the divergence as a reproducible defect.
+    历史注记：曾为 xfail(BUG-DIVFIELD)——彼时落盘缺 ex_date 列，显式点名 fields 会被
+    storage 硬 raise KeyError；此后 backtest 侧改为不点名 fields（DIVFIELD-1，见
+    gateway_adapter.load_dividends），数据侧 2026-06-11 重抓补齐 ex_date/effective_from，
+    缺陷双侧消除。本测试按 load_dividends 现行请求形状直查网关：不抛异常、含 ex_date 列、
+    000630.SZ 的 20260608 除权行在 as_of=当日 10:31 可见（effective_from 闸门已放行）。
     """
     qs = _query_service()
-    # Reproduce exactly what load_dividends sends.
+    # load_dividends 现行请求形状（DIVFIELD-1：不点名 fields；带窗口下界 N8-2）。
     req = {"as_of": "2026-06-08T10:31:00", "datasets": [{
         "dataset": "dividend", "symbols": [EXDAY_SYMBOL],
-        "fields": ["symbol", "ex_date", "cash_div_tax", "stk_div", "stk_bo_rate", "stk_co_rate"],
+        "window": {"range": {"start": "20260605"}},
     }]}
-    # CORRECT: the gateway should degrade (return an empty/ex_date-less block),
-    # letting load_dividends return []. Instead it raises KeyError.
-    result = qs.gateway_query(req)  # expected (intended): no exception
+    result = qs.gateway_query(req)  # 不得抛异常
     block = result["results"]["dividend"]
-    assert "ex_date" not in block["columns"] or block["row_count"] == 0
+    assert "ex_date" in block["columns"], block["columns"]
+    rows = block["rows"]
+    assert rows, "20260608 除权行应在 as_of=20260608T10:31 可见"
 
+    def _ex(row) -> int | None:
+        try:
+            return int(str(row.get("ex_date"))[:10].replace("-", "")[:8])
+        except (TypeError, ValueError):
+            return None
 
-test_inprocess_load_dividends_contract_on_real_data = pytest.mark.xfail(
-    reason="BUG-DIVFIELD: gateway_query routes a field-list dividend request to "
-           "read_window, which raises KeyError on the missing ex_date column "
-           "(400 bad_request) instead of degrading to []. load_dividends' "
-           "documented graceful-[] path is unreachable on real data.",
-    strict=False,
-    raises=KeyError,
-)(test_inprocess_load_dividends_contract_on_real_data)
+    assert any(_ex(r) == 20260608 for r in rows), rows

@@ -58,7 +58,32 @@ workspace 共 **57 个数据集**，日频面覆盖完整且新鲜（多数 2026
 遗留 nit（不阻塞）：test_cli_defaults.py 可并入 test_cli.py；roundtrip 选项缺值时报错不友好；
 数值参数裸插 JSON（服务端 422 兜底）；`-X GET` 风格。
 
-## 4. 验收结果（降级口径：pytest + 文档对齐；端到端取消）
+## 4b. 端到端验收补验（2026-06-12，stk_mins 补齐后；原降级决策解除）
+
+数据侧补齐：`stk_mins` 5,527 标的 / 20260202→20260609（82 交易日，每标的 19,762 行 =
+82×241 分钟**零缺口**）+ `stk_mins_by_date` 镜像 82 天同窗口。
+
+- **本地直读路端到端 ✅**：`scripts/backtest_roundtrip.sh`（000001.SZ，2026-02-02→06-09，
+  买 02-03 / 卖 02-10）七步全过——买卖各 1 笔成交、T+1 正确、推进 82 交易日、close 出报告。
+  数值校验：资产恒等式精确（cash+mv==total）；费用三件套精确（最低佣金 5 元、印花税仅卖出
+  5.535=11070×0.05%、过户费）；`cash_after` 逐笔对账到分；日级序列 82 天全覆盖。
+- **负路径 ✅**：覆盖窗口外日期 → `no_market_data` 显式拒单、脚本明确失败退出，不伪装成交。
+- **网关路（代码层）✅**：跨服务集成测试（`test_adv_integration_realdata.py`）以
+  `VORTEX_DATA_REPO` 指向真实 data 仓后真跑——自带测试 token 起真 data 服务（8791），
+  真实数据撮合：除权日持仓 NAV 连续、**N8 现金分红 50 元真实入账**、停牌拒单、PIT 闸门
+  盘中不可见当日收盘、universe 展开全部通过。生产部署的网关接线仍待用户配
+  `VORTEX_DATA_DASHBOARD_TOKEN`（用户主用本地直读，此项转为待选）。
+- **测试套件（数据补齐后）**：backtest venv **150 passed**（此前 8 个环境性 skip 中 5 个
+  转正通过）+ data venv 3 passed（in-process PIT/分红契约）。
+- **两个"数据时代"过时测试已更新**：① 除权日测试原断言 `corporate_actions == []`
+  （彼时 dividend 缺 ex_date、N8 休眠）→ 现断言入账恰好一次、金额 ≈50；② BUG-RAWGAP /
+  BUG-DIVFIELD 两个 xfail 记录的缺陷已被数据重抓（补 ex_date/effective_from）+
+  DIVFIELD-1（不点名 fields）双侧修复，xfail 拆除、转正向契约断言。
+
+**最终结论：当前版本明确可运行。** 数据设计符合回测需求且实测充分（PIT 闸门、除权入账、
+费用/T+1/涨跌停规则全部在真实数据上验证通过）。
+
+## 4. 验收结果（降级口径：pytest + 文档对齐；端到端取消——已被 §4b 补验取代）
 
 - **pytest 全量：145 passed, 8 skipped, 0 failed**（skip = 对抗实数据测试，因 `stk_mins`
   缺失正确跳过；带 `VORTEX_WORKSPACE` 重跑结果一致）。
@@ -84,10 +109,9 @@ workspace 共 **57 个数据集**，日频面覆盖完整且新鲜（多数 2026
 
 ## 5. 跨仓行动项（vortex_data 侧，本 session 只读不改）
 
-1. **补抓 `stk_mins` 分钟历史**到 ~/vortex/workspace（或把旧 workspace 迁移/挂载回来）。
-   这是恢复回测可运行的唯一硬前提。
-2. 设置 `VORTEX_DATA_DASHBOARD_TOKEN`（vortex_data/.env）并重启——否则网关取数路对
-   Docker 部署不可用，backtest 只能走本地直读回退（qfq 口径、不入分红）。
-3. （性能）生成 `stk_mins_by_date` 镜像（`service/minute_reindex.py`），全市场横截面查询需要。
+1. ~~补抓 `stk_mins`~~ → **已完成（2026-06-12 实测）**：5,527 标的 82 交易日零缺口。
+2. 设置 `VORTEX_DATA_DASHBOARD_TOKEN`（vortex_data/.env）并重启——生产形态网关路的唯一
+   剩余前提（网关代码路径已经集成测试用测试 token 验证通过）。用户主用本地直读，转待选。
+3. ~~生成 `stk_mins_by_date` 镜像~~ → **已完成**：82 天同窗口。
 4. ~~`dividend` schema 核验~~ → **已实测通过**：含 `ex_date`+`effective_from`，非空 ex_date
    1,838 行，N8 分红入账数据就绪，无需重抓。
