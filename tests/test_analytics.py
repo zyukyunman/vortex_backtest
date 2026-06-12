@@ -67,6 +67,22 @@ def test_relative_stats_beta2_alpha0():
     assert rel["tracking_error"] == pytest.approx(te, rel=1e-9)
     assert rel["excess_return"] == pytest.approx(
         (strat_vals[-1] / strat_vals[0] - 1) - (bench_vals[-1] / bench_vals[0] - 1), rel=1e-9)
+    assert rel["information_ratio"] == pytest.approx((m * 252) / te, rel=1e-9)
+
+
+def test_relative_stats_identical_series_te_zero():
+    # 策略 == 基准（完全复制 + 浮点噪声）：diff 恒 0 → TE=0、IR None；beta=1
+    dates = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"]
+    vals = [100.0]
+    for r in [0.01, -0.02, 0.015, 0.005]:
+        vals.append(vals[-1] * (1 + r))
+    bench = dict(zip(dates, vals))
+    # 复制后逐点加 ~1e-13 相对噪声：模拟两条独立计算链路产生的同一序列
+    strat = {d: v * (1 + 1e-13 * (-1) ** i) for i, (d, v) in enumerate(bench.items())}
+    rel = analytics.relative_stats(strat, bench)
+    assert rel["tracking_error"] == 0.0
+    assert rel["information_ratio"] is None
+    assert rel["beta"] == pytest.approx(1.0)
 
 
 def test_relative_stats_insufficient_overlap():
@@ -83,6 +99,41 @@ def test_period_stats_monthly_split():
     # 02 月：r(02-02)=1%、r(02-03)=-2% → (1.01*0.98)-1
     assert rows[1]["strategy_return"] == pytest.approx(1.01 * 0.98 - 1, rel=1e-9)
     assert rows[1]["benchmark_return"] is None and rows[1]["max_drawdown"] <= 0
+    assert rows[1]["benchmark_max_drawdown"] is None  # 无基准 → None
+
+
+def test_perf_stats_nonzero_sharpe_vol_gold():
+    # 日收益 [+2%, -1%]：mean/std 手算（独立算式，不调实现），断言 sharpe/vol 到 1e-9
+    series = s([("2026-01-05", 100.0), ("2026-01-06", 102.0), ("2026-01-07", 102.0 * 0.99)])
+    st = analytics.perf_stats(series)
+    mean = (0.02 + (-0.01)) / 2  # 0.005
+    std = math.sqrt(((0.02 - mean) ** 2 + (-0.01 - mean) ** 2) / 1)  # ddof=1 → 0.0212132…
+    assert st["sharpe"] == pytest.approx(mean / std * math.sqrt(252), rel=1e-9)
+    assert st["volatility"] == pytest.approx(std * math.sqrt(252), rel=1e-9)
+
+
+def test_period_stats_yearly_cross_year():
+    # 跨 2025-12-31 → 2026-01-05：r(12-31)=+1% 归 2025，r(01-05)=+2%、r(01-06)=-1% 归 2026
+    strat = s([("2025-12-30", 100.0), ("2025-12-31", 101.0),
+               ("2026-01-05", 101.0 * 1.02), ("2026-01-06", 101.0 * 1.02 * 0.99)])
+    rows = analytics.period_stats(strat, None, freq="Y")
+    assert [r["period"] for r in rows] == ["2025", "2026"]
+    assert rows[0]["strategy_return"] == pytest.approx(0.01, rel=1e-9)
+    assert rows[1]["strategy_return"] == pytest.approx(1.02 * 0.99 - 1, rel=1e-9)
+
+
+def test_period_stats_with_benchmark_gold():
+    # 策略与基准同日期：基准 200→210→189（+5%、-10%）→ 组收益 -5.5%、组内回撤 -10%
+    dates = ["2026-01-05", "2026-01-06", "2026-01-07"]
+    strat = dict(zip(dates, [100.0, 102.0, 100.98]))
+    bench = dict(zip(dates, [200.0, 210.0, 189.0]))
+    rows = analytics.period_stats(strat, bench, freq="M")
+    assert len(rows) == 1
+    sret = 100.98 / 100.0 - 1
+    bret = 1.05 * 0.90 - 1  # -0.055
+    assert rows[0]["benchmark_return"] == pytest.approx(bret, rel=1e-9)
+    assert rows[0]["excess"] == pytest.approx(sret - bret, rel=1e-9)
+    assert rows[0]["benchmark_max_drawdown"] == pytest.approx(189.0 / 210.0 - 1, rel=1e-9)  # -0.1
 
 
 def _mk_pos(symbol, qty, mv):
@@ -126,6 +177,15 @@ def test_hourly_views_buckets():
     # (≤10:30]=cash2、(10:30,11:30]=cash3、(14:00,15:00] 桶内最后一根=15:00 的 cash5
     assert [(v["timestamp"], v["cash"]) for v in views] == [
         ("2026-02-03T10:30:00", 2), ("2026-02-03T11:30:00", 3), ("2026-02-03T15:00:00", 5)]
+
+
+def test_hourly_views_lunch_break_boundary():
+    # 午休边界：(13:00,14:00] 档下界 13:00 开区间——12:59/13:00 整属午休竞价噪声，不入任何档
+    lunch = [_mk_snap("2026-02-03T12:59:00", 1, 0, []), _mk_snap("2026-02-03T13:00:00", 2, 0, [])]
+    assert analytics.hourly_views(lunch) == []
+    # 午后首根 13:01 落 (13:00,14:00] 档
+    views = analytics.hourly_views(lunch + [_mk_snap("2026-02-03T13:01:00", 3, 0, [])])
+    assert [(v["timestamp"], v["cash"]) for v in views] == [("2026-02-03T14:00:00", 3)]
 
 
 def test_minute_views_passthrough():

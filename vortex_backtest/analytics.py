@@ -109,11 +109,15 @@ def relative_stats(strategy: Mapping[str, float], benchmark: Mapping[str, float]
     n = len(rs)
     ms, mb = _mean(rs), _mean(rb)
     var_b = sum((b - mb) ** 2 for b in rb) / (n - 1)
+    if var_b < _STD_EPS:  # 与 perf_stats 同口径：浮点噪声层面的"恒定基准"→ 按 var=0 处理（beta/alpha None）
+        var_b = 0.0
     cov = sum((a - ms) * (b - mb) for a, b in zip(rs, rb)) / (n - 1)
     beta = cov / var_b if var_b > 0 else None
     alpha = ((ms - rf / TRADING_DAYS) - beta * (mb - rf / TRADING_DAYS)) * TRADING_DAYS if beta is not None else None
     diff = [a - b for a, b in zip(rs, rb)]
     te = _std(diff) * math.sqrt(TRADING_DAYS)
+    if te < _STD_EPS:  # 浮点噪声层面的"完全跟踪"→ 按 TE=0 处理（IR None、tracking_error 0.0）
+        te = 0.0
     return {
         "excess_return": (sv[-1] / sv[0] - 1) - (bv[-1] / bv[0] - 1) if sv[0] and bv[0] else None,
         "information_ratio": (_mean(diff) * TRADING_DAYS) / te if te > 0 else None,
@@ -140,6 +144,7 @@ def period_stats(strategy: Mapping[str, float], benchmark: Mapping[str, float] |
     sbuckets = _period_returns(strategy, keylen)
     bbuckets = _period_returns(benchmark, keylen) if benchmark else {}
     dates, values = _sorted_items(strategy)
+    bdates, bvalues = _sorted_items(benchmark) if benchmark else ([], [])
     rows: list[dict[str, Any]] = []
     for period in sorted(sbuckets):
         rets = sbuckets[period]
@@ -157,12 +162,14 @@ def period_stats(strategy: Mapping[str, float], benchmark: Mapping[str, float] |
             for r in brets:
                 bcum *= 1 + r
             bret = bcum - 1
+        bsub_vals = [bvalues[i] for i in range(len(bvalues)) if bdates[i][:keylen] == period]
         rows.append({
             "period": period,
             "strategy_return": cum - 1,
             "benchmark_return": bret,
             "excess": (cum - 1 - bret) if bret is not None else None,
             "max_drawdown": _max_drawdown(sub_vals),
+            "benchmark_max_drawdown": _max_drawdown(bsub_vals) if bsub_vals else None,
             "volatility": std * math.sqrt(TRADING_DAYS) if len(rets) >= 2 else None,
             "sharpe": ((_mean(rets) - rf / TRADING_DAYS) / std) * math.sqrt(TRADING_DAYS) if std > 0 else None,
         })
@@ -197,7 +204,9 @@ def weekly_views(daily_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             for wk, r in sorted(by_week.items())]
 
 
-_HOUR_BUCKETS = ("10:30:00", "11:30:00", "14:00:00", "15:00:00")
+# 小时档显式边界 (lo, hi]：午后档下界 13:00 开区间——午休/13:00 整的 bar 属竞价噪声，不入任何档
+_HOUR_BUCKETS = (("00:00:00", "10:30:00"), ("10:30:00", "11:30:00"),
+                 ("13:00:00", "14:00:00"), ("14:00:00", "15:00:00"))
 
 
 def hourly_views(snapshot_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -206,10 +215,9 @@ def hourly_views(snapshot_rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]
     for r in snapshot_rows:  # 升序
         ts = str(r["timestamp"])
         d, t = ts[:10], ts[11:19]
-        for i, b in enumerate(_HOUR_BUCKETS):
-            lo = _HOUR_BUCKETS[i - 1] if i else "00:00:00"
-            if lo < t <= b:
-                out[(d, b)] = r
+        for lo, hi in _HOUR_BUCKETS:
+            if lo < t <= hi:
+                out[(d, hi)] = r
                 break
     return [_snapshot_view(r, timestamp=f"{d}T{b}") for (d, b), r in sorted(out.items())]
 
