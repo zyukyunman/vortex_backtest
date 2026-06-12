@@ -77,9 +77,9 @@ def test_metrics_shape_and_benchmark(client):
     assert r.status_code == 200
     m = r.json()
     assert m["benchmark_name"] == "沪深300" and m["low_confidence"] is True
-    # finalize 的 daily 序列起点是首交易日 EOD(1010)，无 initial_cash 基线行 → TR=1012/1010-1
-    assert m["strategy"]["n_days"] == 3
-    assert m["strategy"]["total_return"] == pytest.approx(1012.0 / 1010.0 - 1)
+    # 序列含 initial_cash 基线锚点(首交易日前一天=1000)，与 /summary 同口径 → TR=1012/1000-1
+    assert m["strategy"]["n_days"] == 4  # 3 个交易日 + 1 个基线点
+    assert m["strategy"]["total_return"] == pytest.approx(0.012)
     assert m["benchmark_stats"]["total_return"] == pytest.approx(4000.4 / 4000.0 - 1, rel=1e-9)
     assert m["relative"]["beta"] is not None
     assert m["annual"][0]["period"] == "2026" and m["monthly"][0]["period"] == "2026-02"
@@ -89,14 +89,17 @@ def test_metrics_benchmark_missing_degrades(client):
     m = client.get(f"/sessions/{SID}/metrics?benchmark=NOPE.XX").json()
     assert m["benchmark_stats"] is None and m["relative"] is None
     assert m["error"] == "benchmark_data_missing"
-    assert m["strategy"]["total_return"] == pytest.approx(1012.0 / 1010.0 - 1)   # 绝对类照常
+    assert m["strategy"]["total_return"] == pytest.approx(0.012)   # 绝对类照常(对 initial_cash)
 
 
 def test_equity_curve(client):
     eq = client.get(f"/sessions/{SID}/equity?benchmark=000300.SH").json()
-    assert eq["dates"] == ["2026-02-03", "2026-02-04", "2026-02-05"]
-    assert eq["strategy"][0] == 1.0 and eq["benchmark"][0] == 1.0
-    assert len(eq["drawdown"]) == 3
+    # 首位是 initial_cash 基线日(首交易日前一天)，strategy[0]=1.0 即基线=期初本金；
+    # 基准在基线日无数据 → None(不回填)，自首个有数日起 1.0
+    assert eq["dates"] == ["2026-02-02", "2026-02-03", "2026-02-04", "2026-02-05"]
+    assert eq["strategy"][0] == 1.0 and eq["benchmark"][0] is None
+    assert eq["benchmark"][1] == 1.0
+    assert len(eq["drawdown"]) == 4
 
 
 def test_positions_granularities(client):

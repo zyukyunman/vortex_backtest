@@ -5,7 +5,7 @@ import os
 import secrets
 import sqlite3
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -422,8 +422,16 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     def _daily_rows(data_store: DataStore, session_id: str) -> list[dict]:
         return _session_summary(data_store, session_id).get("daily", [])
 
-    def _strategy_series(daily_rows: list[dict]) -> dict[str, float]:
-        return {str(r["trade_date"]): float(r["total_value"]) for r in daily_rows}
+    def _strategy_series(row: dict, daily_rows: list[dict]) -> dict[str, float]:
+        """日净值序列 + 期初基线：在首交易日前一天注入 initial_cash 锚点，
+        使 total_return/equity 与 /summary 同口径（对期初本金，含首日盈亏）。"""
+        # 注意：基线锚点不是交易日，low_confidence 等"交易日数"语义应按 daily_rows 长度算。
+        series = {str(r["trade_date"]): float(r["total_value"]) for r in daily_rows}
+        if series:
+            first = min(series)
+            baseline = (date.fromisoformat(first) - timedelta(days=1)).isoformat()
+            series[baseline] = float(row["initial_cash"])
+        return series
 
     def _benchmark_for(row: dict, code: str) -> tuple[dict[str, float], str]:
         start = int(str(row["start_date"]).replace("-", "")) if row.get("start_date") else 0
@@ -438,12 +446,14 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         data_store: DataStore = Depends(get_store),
     ) -> dict:
         row = _session_or_404(data_store, session_id)
-        strat = _strategy_series(_daily_rows(data_store, session_id))
+        daily = _daily_rows(data_store, session_id)
+        strat = _strategy_series(row, daily)
         bench, bench_name = _benchmark_for(row, benchmark)
         out = {
             "benchmark": benchmark,
             "benchmark_name": bench_name,
-            "low_confidence": len(strat) < analytics.LOW_CONFIDENCE_DAYS,
+            # 按实际交易日数算(不含基线锚点)
+            "low_confidence": len(daily) < analytics.LOW_CONFIDENCE_DAYS,
             "strategy": analytics.perf_stats(strat, rf=rf),
             "benchmark_stats": analytics.perf_stats(bench, rf=rf) if bench else None,
             "relative": analytics.relative_stats(strat, bench, rf=rf) if bench else None,
@@ -461,7 +471,7 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         data_store: DataStore = Depends(get_store),
     ) -> dict:
         row = _session_or_404(data_store, session_id)
-        strat = _strategy_series(_daily_rows(data_store, session_id))
+        strat = _strategy_series(row, _daily_rows(data_store, session_id))
         bench, _ = _benchmark_for(row, benchmark)
         return analytics.equity_curve(strat, bench or None)
 
