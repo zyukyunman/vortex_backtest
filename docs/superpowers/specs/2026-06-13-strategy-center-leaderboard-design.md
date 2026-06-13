@@ -102,10 +102,18 @@
 - **latest（最新一次）** = `created_at` 最大的 run；tie-break `session_id` 字典序。语义=最近一次发起的回测。
 - **best（历史最优）** = `total_return` 最大的 run；tie-break `created_at` 较新者，再 `session_id`。
   选总收益而非夏普——避开短样本夏普噪声（一期 §5 已定 <60 日 low_confidence）。
-- **per-run 指标来源**：`total_return`/`max_drawdown` 直接取该 run 的 summary；
-  `annual_return/sharpe/volatility/n_days` 由 `analytics.perf_stats` 对该 run 的**日净值序列**算出——
-  该序列经 `_strategy_series`（首交易日前注入 `initial_cash` 基线锚点）构造，与 `/metrics` 完全同口径，不另立。
-- **low_confidence**：`len(daily) < analytics.LOW_CONFIDENCE_DAYS`（60），沿用一期约定。
+- **per-run 指标来源**：`total_return/max_drawdown/annual_return/sharpe/volatility` **全部**由
+  `analytics.perf_stats` 对该 run 的**日净值序列**算出——该序列经 `_strategy_series`（首交易日前注入
+  `initial_cash` 基线锚点）构造，与 `/metrics` **完全同口径**（刻意：排行榜/策略详情某 run 的各指标
+  与其单会话 `/metrics` 页严丝合缝一致）。其中 `total_return` 与 summary 数值等价；`max_drawdown` 用
+  基线锚点序列（同 `/metrics`），可能比 summary 的回撤更深一档（捕捉首日相对期初本金的回撤）——
+  排行榜口径对齐 `/metrics`，不对齐会话列表页的 summary 回撤，二者本就并存。`n_days` = 实际交易日数
+  = `len(daily)`（不含基线锚点）。
+- **low_confidence**：`len(daily) < analytics.LOW_CONFIDENCE_DAYS`（60），沿用一期约定。看板对 `low_confidence`
+  的行**只置灰风险调整/年化列**（年化 `annual_return`、夏普 `sharpe`、波动率 `volatility`）+ title 提示；
+  累计收益 `total_return` 与回撤 `max_drawdown` 不置灰（沿用一期/design13 §7.2：短样本护栏只约束风险调整与年化指标）。
+  三视图统一：排行榜代表行用 `latest.low_confidence`、策略详情 runs 表用每 run 的 `low_confidence`、
+  对比表用各代表 run `/metrics` 的顶层 `low_confidence`。
 - **open 会话**：照常进榜/进 runs，按当前累积态即时归约（`_session_summary` 对 open 的现有行为）。
 - **n_runs**：该 strategy_id 下会话总数（含 open）。
 - **accounts**：该 strategy_id 下去重 account_id 升序列表（一个策略可能在多个 account 上跑过）。
