@@ -546,9 +546,10 @@
     if (!canvas || typeof Chart === 'undefined' || !series.length) { return; }
     var labels, datasets;
     if (axis === 'relative') {
-      // 对齐起点：x = 第 N 个交易日；各曲线按自身下标对齐（短曲线点少，自然在前段对齐）
-      var maxLen = series.reduce(function (m, s) { return Math.max(m, s.values.length); }, 0);
-      labels = []; for (var i = 0; i < maxLen; i++) { labels.push(i === 0 ? '起点' : '第' + i + '日'); }
+      // 对齐起点：各曲线按自身下标对齐(短曲线落前段)；x 轴标签用最长曲线的真实日期(时间感，非"第N日")
+      var ref = series[0];
+      series.forEach(function (s) { if (s.dates.length > ref.dates.length) { ref = s; } });
+      labels = ref.dates.slice();
       datasets = series.map(function (s, k) {
         return { label: s.label, data: s.values, borderColor: CURVE_PALETTE[k % CURVE_PALETTE.length],
           pointRadius: 0, borderWidth: 1.6 };
