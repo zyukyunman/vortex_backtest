@@ -221,3 +221,60 @@ def test_rebalance_events_diff_and_aggregation():
     sell_day = events[1]
     assert sell_day["position_diff"][0]["qty_after"] == 0
     assert sell_day["realized_pnl_total"] == pytest.approx(2.0)
+
+
+def test_return_histogram_buckets():
+    # 日收益 +1% / -0.4% / +0.2% / 0% → 桶 (0.005,0.01] (−0.005,0]×2 (0,0.005]
+    series = s([("2026-01-05", 100.0), ("2026-01-06", 101.0), ("2026-01-07", 100.596),
+                ("2026-01-08", 100.797192), ("2026-01-09", 100.797192)])
+    h = analytics.return_histogram(series)
+    assert h["bucket_width"] == 0.005
+    by_lo = {b["lo"]: b for b in h["buckets"]}
+    assert by_lo[0.005]["hi"] == 0.01 and by_lo[0.005]["count"] == 1      # +1%
+    assert by_lo[-0.005]["count"] == 2                                     # -0.4% 与 0%（lo<r≤hi）
+    assert by_lo[0.0]["count"] == 1                                        # +0.2%
+    assert analytics.return_histogram({})["buckets"] == []
+
+
+def test_drawdown_episodes_golden():
+    # 100→110→99→105→121→115→118：事件1 峰110谷99已收复；事件2 峰121谷115进行中
+    series = s([("2026-01-05", 100.0), ("2026-01-06", 110.0), ("2026-01-07", 99.0),
+                ("2026-01-08", 105.0), ("2026-01-09", 121.0), ("2026-01-12", 115.0),
+                ("2026-01-13", 118.0)])
+    eps = analytics.drawdown_episodes(series)
+    assert len(eps) == 2
+    e1, e2 = eps                                   # 按深度降序：-10% 在前
+    assert e1["peak_date"] == "2026-01-06" and e1["trough_date"] == "2026-01-07"
+    assert e1["depth"] == pytest.approx(99.0 / 110.0 - 1)
+    assert e1["drawdown_days"] == 1 and e1["recovery_days"] == 2 and e1["recovered"] is True
+    assert e2["peak_date"] == "2026-01-09" and e2["trough_date"] == "2026-01-12"
+    assert e2["recovered"] is False and e2["recovery_days"] is None
+    assert analytics.drawdown_episodes({"2026-01-05": 100.0}) == []
+
+
+def test_monthly_turnover_golden():
+    daily = [_mk_daily("2026-02-03", 700.0, 300.0, []), _mk_daily("2026-02-04", 1010.0, 0.0, []),
+             _mk_daily("2026-03-02", 1010.0, 0.0, [])]
+    trades = [
+        {"trade_date": "2026-02-03", "symbol": "000001.SZ", "side": 1, "quantity": 30,
+         "amount": 300.0, "commission": 5.0, "stamp_tax": 0.0, "transfer_fee": 0.0, "realized_pnl": 0.0},
+        {"trade_date": "2026-02-04", "symbol": "000001.SZ", "side": 2, "quantity": 10,
+         "amount": 100.0, "commission": 5.0, "stamp_tax": 0.05, "transfer_fee": 0.0, "realized_pnl": 1.0},
+    ]
+    out = analytics.monthly_turnover(trades, daily)
+    feb, mar = out["monthly"]
+    assert feb["month"] == "2026-02"
+    # abs=1e-6：实现按 round(·,6) 落盘，残差可达 5e-7，超出 approx 默认 rel=1e-6 的有效容差
+    assert feb["turnover"] == pytest.approx(min(300.0, 100.0) / ((1000.0 + 1010.0) / 2), abs=1e-6)  # 单边/月日均资产
+    assert feb["buy_amount"] == 300.0 and feb["sell_amount"] == 100.0
+    assert mar["month"] == "2026-03" and mar["turnover"] == 0.0                            # 无成交月=0
+    assert out["mean"] == pytest.approx((feb["turnover"] + 0.0) / 2, abs=1e-6)
+    assert analytics.monthly_turnover([], daily) == {"monthly": [], "mean": None}          # 全程无成交→空
+
+
+def test_exposure_series():
+    daily = [_mk_daily("2026-02-03", 900.0, 100.0, []), _mk_daily("2026-02-04", 1000.0, 0.0, [])]
+    ex = analytics.exposure_series(daily)
+    assert ex["dates"] == ["2026-02-03", "2026-02-04"]
+    assert ex["ratio"][0] == pytest.approx(0.1) and ex["ratio"][1] == 0.0
+    assert analytics.exposure_series([]) == {"dates": [], "ratio": []}

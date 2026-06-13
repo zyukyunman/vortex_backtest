@@ -76,11 +76,11 @@ def test_drawdown_episodes_golden():
 
 ```python
 def return_histogram(series: Mapping[str, float], *, bucket: float = 0.005) -> dict[str, Any]:
-    """日收益直方图：桶 (idx*b, (idx+1)*b]（lo < r ≤ hi），仅回非空桶、按 lo 升序。"""
+    """日收益直方图：桶 (idx*b, (idx+1)*b]（lo < r ≤ hi，边界含 1e-9 浮点容差），仅回非空桶、按 lo 升序。"""
     _, values = _sorted_items(series)
     counts: dict[int, int] = {}
     for r in _returns(values):
-        idx = math.ceil(r / bucket) - 1
+        idx = math.ceil(r / bucket - 1e-9) - 1  # 拍板：边界 1e-9 容差，见执行记录
         counts[idx] = counts.get(idx, 0) + 1
     buckets = [{"lo": round(i * bucket, 6), "hi": round((i + 1) * bucket, 6), "count": c}
                for i, c in sorted(counts.items())]

@@ -285,3 +285,92 @@ def rebalance_events(trades: list[Mapping[str, Any]],
             "cash_after": day_row.get("cash"), "total_value_after": day_row.get("total_value"),
         })
     return events
+
+
+def return_histogram(series: Mapping[str, float], *, bucket: float = 0.005) -> dict[str, Any]:
+    """日收益直方图：桶 (idx*b, (idx+1)*b]（lo < r ≤ hi，边界含 1e-9 浮点容差），仅回非空桶、按 lo 升序。"""
+    _, values = _sorted_items(series)
+    counts: dict[int, int] = {}
+    for r in _returns(values):
+        idx = math.ceil(r / bucket - 1e-9) - 1  # 边界 1e-9 容差归下桶（如 101/100-1 的浮点尾差）
+        counts[idx] = counts.get(idx, 0) + 1
+    buckets = [{"lo": round(i * bucket, 6), "hi": round((i + 1) * bucket, 6), "count": c}
+               for i, c in sorted(counts.items())]
+    return {"bucket_width": bucket, "buckets": buckets}
+
+
+def drawdown_episodes(series: Mapping[str, float], *, top_n: int = 10) -> list[dict[str, Any]]:
+    """回撤事件（峰→谷→收复）：按深度降序取 Top-N；末段未收复 → recovered=False。
+
+    天数按交易日（序列索引差）计，不算自然日。
+    """
+    dates, values = _sorted_items(series)
+    if len(values) < 2:
+        return []
+
+    def episode(peak_i: int, trough_i: int, recover_i: int | None) -> dict[str, Any]:
+        return {
+            "peak_date": dates[peak_i], "trough_date": dates[trough_i],
+            "depth": round(values[trough_i] / values[peak_i] - 1, 6) if values[peak_i] else 0.0,
+            "drawdown_days": trough_i - peak_i,
+            "recovery_days": (recover_i - trough_i) if recover_i is not None else None,
+            "recovered": recover_i is not None,
+        }
+
+    episodes: list[dict[str, Any]] = []
+    peak_i, trough_i, in_dd = 0, 0, False
+    for i in range(1, len(values)):
+        if values[i] >= values[peak_i]:
+            if in_dd:
+                episodes.append(episode(peak_i, trough_i, i))
+                in_dd = False
+            peak_i = i
+        else:
+            if not in_dd:
+                in_dd, trough_i = True, i
+            elif values[i] < values[trough_i]:
+                trough_i = i
+    if in_dd:
+        episodes.append(episode(peak_i, trough_i, None))
+    episodes.sort(key=lambda e: e["depth"])
+    return episodes[:top_n]
+
+
+def monthly_turnover(trades: list[Mapping[str, Any]],
+                     daily_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """月度单边换手率 = min(月买入额, 月卖出额) ÷ 月日均总资产；无成交月=0。
+
+    全程零成交 → {"monthly": [], "mean": None}（契约：分布为空不伪装）。
+    """
+    if not trades:
+        return {"monthly": [], "mean": None}
+    amt: dict[str, dict[str, float]] = {}
+    for t in trades:
+        m = str(t["trade_date"])[:7]
+        d = amt.setdefault(m, {"buy": 0.0, "sell": 0.0})
+        d["buy" if int(t["side"]) == 1 else "sell"] += float(t["amount"])
+    tv: dict[str, list[float]] = {}
+    for r in daily_rows:
+        tv.setdefault(str(r["trade_date"])[:7], []).append(float(r["total_value"]))
+    rows: list[dict[str, Any]] = []
+    vals: list[float] = []
+    for m in sorted(tv):
+        a = amt.get(m, {"buy": 0.0, "sell": 0.0})
+        avg_tv = _mean(tv[m])
+        turn = (min(a["buy"], a["sell"]) / avg_tv) if avg_tv else None
+        rows.append({"month": m, "turnover": round(turn, 6) if turn is not None else None,
+                     "buy_amount": round(a["buy"], 2), "sell_amount": round(a["sell"], 2),
+                     "avg_total_value": round(avg_tv, 2)})
+        if turn is not None:
+            vals.append(turn)
+    return {"monthly": rows, "mean": round(_mean(vals), 6) if vals else None}
+
+
+def exposure_series(daily_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """仓位水平日序列：持仓市值 ÷ 总资产（0~1）；总资产为 0 → 0.0。"""
+    dates, ratio = [], []
+    for r in daily_rows:
+        dates.append(str(r["trade_date"]))
+        total = float(r.get("total_value") or 0.0)
+        ratio.append(round(float(r.get("market_value") or 0.0) / total, 6) if total else 0.0)
+    return {"dates": dates, "ratio": ratio}
