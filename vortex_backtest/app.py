@@ -548,6 +548,44 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
     def benchmarks() -> list[dict]:
         return _list_benchmarks()
 
+    def _strategy_records(data_store: DataStore) -> list[dict]:
+        """遍历所有会话 → 每会话一条 per-run 记录（行身份 + summary 指标 + perf_stats 派生）。
+
+        供 strategy_rollup/strategy_detail 聚合。读时计算：已 close 命中 summary.json 缓存，
+        open 即时归约（与 _session_summary 现有行为一致）。n_days = 实际交易日数 = len(daily)
+        （不含基线锚点）；low_confidence 同 /metrics 口径。
+        """
+        records = []
+        for row in data_store.list_sessions():
+            cfg = json.loads(row.get("config_json") or "{}")
+            daily = _daily_rows(data_store, row["session_id"])
+            stats = analytics.perf_stats(_strategy_series(row, daily))
+            records.append({
+                "strategy_id": str(cfg.get("strategy_id") or "session"),
+                "session_id": row["session_id"], "account_id": row["account_id"],
+                "start_date": row.get("start_date"), "end_date": row.get("end_date"),
+                "status": row["status"],
+                "created_at": row["created_at"], "updated_at": row["updated_at"],
+                "total_return": stats["total_return"], "annual_return": stats["annual_return"],
+                "sharpe": stats["sharpe"], "volatility": stats["volatility"],
+                "max_drawdown": stats["max_drawdown"],
+                "n_days": len(daily), "low_confidence": len(daily) < analytics.LOW_CONFIDENCE_DAYS,
+            })
+        return records
+
+    @app.get("/strategies")
+    def strategies(data_store: DataStore = Depends(get_store)) -> list[dict]:
+        return analytics.strategy_rollup(_strategy_records(data_store))
+
+    @app.get("/strategies/{strategy_id}")
+    def strategy_detail(
+        strategy_id: str, data_store: DataStore = Depends(get_store)
+    ) -> dict:
+        detail = analytics.strategy_detail(strategy_id, _strategy_records(data_store))
+        if detail is None:
+            raise HTTPException(status_code=404, detail={"error": "strategy_not_found"})
+        return detail
+
     # 托管只读看板（P5 壳）：/ui/ 提供静态 SPA，/ 重定向到看板。
     web_dir = Path(__file__).resolve().parent / "web"
     if web_dir.exists():
