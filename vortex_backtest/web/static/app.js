@@ -436,10 +436,16 @@
   var STRAT_COLS = [['total_return', '总收益'], ['annual_return', '年化'],
                     ['sharpe', '夏普'], ['max_drawdown', '最大回撤']];
 
-  function fmtStratCell(key, v) {
+  // 短样本护栏：年化/夏普/波动率等风险调整与年化指标 <60 交易日时置灰 + title（累计收益/回撤不受此限，沿用一期 design13 §7.2）
+  function lowConfAttr(lowConf, key) {
+    return (lowConf && (key === 'annual_return' || key === 'sharpe' || key === 'volatility'))
+      ? ' style="opacity:.5" title="样本<60交易日，风险指标仅供参考"' : '';
+  }
+
+  function fmtStratCell(key, v, lowConf) {
     var disp = key === 'sharpe' ? num(v) : pct(v);
     var c = (key === 'total_return' || key === 'annual_return') ? cls(v) : '';
-    return '<td class="' + c + '">' + disp + '</td>';
+    return '<td class="' + c + '"' + lowConfAttr(lowConf, key) + '>' + disp + '</td>';
   }
 
   function sortStrategies(rows) {
@@ -476,7 +482,7 @@
         '<td><a href="#/strategy/' + encodeURIComponent(r.strategy_id) + '">' + esc(r.strategy_id) + '</a></td>' +
         '<td>' + r.n_runs + '</td>' +
         '<td>' + esc(r.accounts.join(', ')) + '</td>' +
-        STRAT_COLS.map(function (c) { return fmtStratCell(c[0], r.latest[c[0]]); }).join('') +
+        STRAT_COLS.map(function (c) { return fmtStratCell(c[0], r.latest[c[0]], r.latest.low_confidence); }).join('') +
         '<td class="' + cls(r.best.total_return) + '">' + pct(r.best.total_return) + '</td>' +
         '<td>' + esc(r.first_run || '') + ' ~ ' + esc(r.last_run || '') + '</td></tr>';
     }).join('');
@@ -580,7 +586,8 @@
         '<td>' + esc(r.start_date || '') + ' ~ ' + esc(r.end_date || '') + '</td>' +
         '<td>' + esc(r.status) + '</td>' +
         '<td class="' + cls(r.total_return) + '">' + pct(r.total_return) + '</td>' +
-        '<td>' + pct(r.annual_return) + '</td><td>' + num(r.sharpe) + '</td>' +
+        '<td' + lowConfAttr(r.low_confidence, 'annual_return') + '>' + pct(r.annual_return) + '</td>' +
+        '<td' + lowConfAttr(r.low_confidence, 'sharpe') + '>' + num(r.sharpe) + '</td>' +
         '<td>' + pct(r.max_drawdown) + '</td>' +
         '<td>' + esc(String(r.created_at || '').slice(0, 16).replace('T', ' ')) + '</td></tr>';
     }).join('');
@@ -630,10 +637,7 @@
     var head = '<tr><th>指标</th>' + items.map(function (it) { return '<th>' + esc(it.id) + '</th>'; }).join('') + '</tr>';
     var mbody = CMP_METRICS.map(function (mk) {
       return '<tr><td>' + mk[0] + '</td>' + items.map(function (it) {
-        var v = it.m.strategy[mk[1]];
-        var disp = mk[1] === 'sharpe' ? num(v) : pct(v);
-        var c = (mk[1] === 'total_return' || mk[1] === 'annual_return') ? cls(v) : '';
-        return '<td class="' + c + '">' + disp + '</td>';
+        return fmtStratCell(mk[1], it.m.strategy[mk[1]], it.m.low_confidence);
       }).join('') + '</tr>';
     }).join('');
     app.innerHTML =
