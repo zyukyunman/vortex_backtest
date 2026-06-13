@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from datetime import date
 from typing import Any, Mapping
 
@@ -374,3 +375,72 @@ def exposure_series(daily_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         total = float(r.get("total_value") or 0.0)
         ratio.append(round(float(r.get("market_value") or 0.0) / total, 6) if total else 0.0)
     return {"dates": dates, "ratio": ratio}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 策略中心 / 排行榜（spec 2026-06-13）：按 strategy_id 聚合 per-run 记录。
+# 输入 record 由 app 层从会话行 + summary + perf_stats 抽好；本层不读文件不碰网络。
+# ──────────────────────────────────────────────────────────────────────────
+
+_RUN_FIELDS = ("session_id", "account_id", "start_date", "end_date", "status",
+               "total_return", "annual_return", "sharpe", "volatility",
+               "max_drawdown", "n_days", "low_confidence", "created_at", "updated_at")
+
+
+def _run_view(rec: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: rec.get(k) for k in _RUN_FIELDS}
+
+
+def _latest_run(group: list[Mapping[str, Any]]) -> Mapping[str, Any]:
+    # 最新一次 = created_at 最大；tie-break session_id 字典序。
+    return max(group, key=lambda r: (str(r["created_at"]), str(r["session_id"])))
+
+
+def _best_run(group: list[Mapping[str, Any]]) -> Mapping[str, Any]:
+    # 历史最优 = total_return 最大；tie-break created_at 较新、再 session_id。
+    return max(group, key=lambda r: (float(r["total_return"]), str(r["created_at"]), str(r["session_id"])))
+
+
+def _run_window(group: list[Mapping[str, Any]]) -> tuple[str | None, str | None]:
+    # first/last_run = 各 run end_date 的 min/max；无 end_date 的 run 不计入，全缺则 (None, None)。
+    ends = sorted(str(r["end_date"]) for r in group if r.get("end_date"))
+    return (ends[0], ends[-1]) if ends else (None, None)
+
+
+def _group_row(strategy_id: str, group: list[Mapping[str, Any]]) -> dict[str, Any]:
+    latest, best = _latest_run(group), _best_run(group)
+    first_run, last_run = _run_window(group)
+    return {
+        "strategy_id": strategy_id,
+        "n_runs": len(group),
+        "accounts": sorted({str(r["account_id"]) for r in group}),
+        "first_run": first_run, "last_run": last_run,
+        "latest": _run_view(latest),
+        "best": {"session_id": best["session_id"], "total_return": best["total_return"]},
+    }
+
+
+def strategy_rollup(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """按 strategy_id 聚合 → 排行榜行，默认按 latest.total_return 降序（tie-break strategy_id 升序）。"""
+    groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for r in records:
+        groups[str(r["strategy_id"])].append(r)
+    rows = [_group_row(sid, g) for sid, g in groups.items()]
+    rows.sort(key=lambda row: (-float(row["latest"]["total_return"]), row["strategy_id"]))
+    return rows
+
+
+def strategy_detail(strategy_id: str, records: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """单策略详情：runs 按 created_at 升序 + latest/best。无任何会话 → None（端点转 404）。"""
+    group = [r for r in records if str(r["strategy_id"]) == strategy_id]
+    if not group:
+        return None
+    latest, best = _latest_run(group), _best_run(group)
+    runs = sorted((_run_view(r) for r in group),
+                  key=lambda r: (str(r["created_at"]), str(r["session_id"])))
+    return {
+        "strategy_id": strategy_id, "n_runs": len(group),
+        "accounts": sorted({str(r["account_id"]) for r in group}),
+        "runs": runs, "latest": _run_view(latest),
+        "best": {"session_id": best["session_id"], "total_return": best["total_return"]},
+    }
