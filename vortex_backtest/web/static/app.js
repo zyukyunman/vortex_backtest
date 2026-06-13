@@ -4,8 +4,11 @@
   var app = document.getElementById('app');
   var crumbs = document.getElementById('crumbs');
   var charts = [];
-  var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [], account: '', tab: 'equity' };
+  var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [], account: '', tab: 'equity',
+                strat_sort: 'total_return', cmp_axis: 'calendar' };
   var detail = null;   // 详情页数据缓存 {sid, m, eq, dist}：切页签零请求
+  var cmpSel = {};     // 排行榜对比篮：{strategy_id: true}
+  var cmpItems = [];   // 叠加图曲线缓存 [{label, dates, values}]：切轴重画零请求
 
   function get(path) {
     return fetch(path).then(function (r) {
@@ -60,8 +63,12 @@
 
   function route() {
     destroyCharts();
-    var m = location.hash.match(/^#\/session\/([\w-]+)/);
-    if (m) { renderDetail(m[1]); } else { renderList(); }
+    var h = location.hash, m;
+    if ((m = h.match(/^#\/strategy\/(.+)$/))) { renderStrategyDetail(decodeURIComponent(m[1])); }
+    else if ((m = h.match(/^#\/compare\/(.+)$/))) { renderCompare(m[1].split(',').map(decodeURIComponent)); }
+    else if (h.indexOf('#/strategies') === 0) { renderStrategies(); }
+    else if ((m = h.match(/^#\/session\/([\w-]+)/))) { renderDetail(m[1]); }
+    else { renderList(); }
   }
 
   // ---------------- 列表页 ----------------
@@ -422,5 +429,79 @@
         plugins: { legend: { position: 'top' } },
       },
     }));
+  }
+
+  // ════════════════════ 策略中心：排行榜（spec 2026-06-13）════════════════════
+  // 代表行指标列：[字段, 表头]
+  var STRAT_COLS = [['total_return', '总收益'], ['annual_return', '年化'],
+                    ['sharpe', '夏普'], ['max_drawdown', '最大回撤']];
+
+  function fmtStratCell(key, v) {
+    var disp = key === 'sharpe' ? num(v) : pct(v);
+    var c = (key === 'total_return' || key === 'annual_return') ? cls(v) : '';
+    return '<td class="' + c + '">' + disp + '</td>';
+  }
+
+  function sortStrategies(rows) {
+    var key = state.strat_sort;
+    return rows.slice().sort(function (a, b) {
+      var av = a.latest[key], bv = b.latest[key];
+      av = av == null ? -Infinity : av; bv = bv == null ? -Infinity : bv;
+      return bv - av;   // 一律降序（收益/夏普越大越好；回撤为负数，越大=越浅亦合理）
+    });
+  }
+
+  function renderStrategies() {
+    crumbs.innerHTML = '策略中心';
+    app.innerHTML = '<div class="section"><h2>策略排行榜</h2><div id="lb">加载中…</div></div>';
+    get('/strategies').then(function (rows) {
+      if (!rows.length) {
+        document.getElementById('lb').innerHTML = '<p>暂无策略。跑几笔带 strategy_id 的回测后再来。</p>';
+        return;
+      }
+      renderLeaderboard(rows);
+    }).catch(fail);
+  }
+
+  function renderLeaderboard(rows) {
+    var sorted = sortStrategies(rows);
+    var heads = STRAT_COLS.map(function (c) {
+      return '<th class="sortable" data-k="' + c[0] + '" style="cursor:pointer">' + c[1] +
+        (state.strat_sort === c[0] ? ' ▾' : '') + '</th>';
+    }).join('');
+    var body = sorted.map(function (r) {
+      var checked = cmpSel[r.strategy_id] ? ' checked' : '';
+      return '<tr>' +
+        '<td><input type="checkbox" class="cmp-cb" data-sid="' + esc(r.strategy_id) + '"' + checked + '></td>' +
+        '<td><a href="#/strategy/' + encodeURIComponent(r.strategy_id) + '">' + esc(r.strategy_id) + '</a></td>' +
+        '<td>' + r.n_runs + '</td>' +
+        '<td>' + esc(r.accounts.join(', ')) + '</td>' +
+        STRAT_COLS.map(function (c) { return fmtStratCell(c[0], r.latest[c[0]]); }).join('') +
+        '<td class="' + cls(r.best.total_return) + '">' + pct(r.best.total_return) + '</td>' +
+        '<td>' + esc(r.first_run || '') + ' ~ ' + esc(r.last_run || '') + '</td></tr>';
+    }).join('');
+    document.getElementById('lb').innerHTML =
+      '<div id="cmp-bar" class="muted" style="margin-bottom:8px"></div>' +
+      '<table class="kpi-table"><thead><tr><th></th><th>策略</th><th>回测数</th><th>账户</th>' +
+      heads + '<th>历史最优</th><th>区间</th></tr></thead><tbody>' + body + '</tbody></table>';
+    Array.prototype.forEach.call(document.querySelectorAll('th.sortable'), function (th) {
+      th.addEventListener('click', function () { state.strat_sort = th.dataset.k; renderLeaderboard(rows); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.cmp-cb'), function (cb) {
+      cb.addEventListener('change', function () {
+        if (cb.checked) { cmpSel[cb.dataset.sid] = true; } else { delete cmpSel[cb.dataset.sid]; }
+        updateCmpBar();
+      });
+    });
+    updateCmpBar();
+  }
+
+  function updateCmpBar() {
+    var bar = document.getElementById('cmp-bar');
+    if (!bar) { return; }
+    var ids = Object.keys(cmpSel);
+    if (ids.length < 2) { bar.innerHTML = '勾选 ≥2 个策略以横向对比。'; return; }
+    bar.innerHTML = '已选 ' + ids.length + ' 个：' + esc(ids.join(', ')) +
+      ' <a href="#/compare/' + ids.map(encodeURIComponent).join(',') + '">对比选中 →</a>';
   }
 })();
