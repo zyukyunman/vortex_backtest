@@ -4,7 +4,8 @@
   var app = document.getElementById('app');
   var crumbs = document.getElementById('crumbs');
   var charts = [];
-  var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [], account: '' };
+  var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [], account: '', tab: 'equity' };
+  var detail = null;   // 详情页数据缓存 {sid, m, eq, dist}：切页签零请求
 
   function get(path) {
     return fetch(path).then(function (r) {
@@ -98,11 +99,13 @@
       get('/sessions/' + sid + '/metrics' + benchQ),
       get('/sessions/' + sid + '/equity' + benchQ),
       get('/sessions/' + sid + '/rebalances'),
+      get('/sessions/' + sid + '/distributions'),
       (state.gran === 'minute' && !state.minuteDate)
         ? Promise.resolve(null) : get('/sessions/' + sid + '/positions' + posQ),
     ]).then(function (res) {
       state.benchmarks = res[1];
-      draw(sid, res[0], res[2], res[3], res[4], res[5]);
+      detail = { sid: sid, m: res[2], eq: res[3], dist: res[5] };
+      draw(sid, res[0], res[2], res[3], res[4], res[6]);
     }).catch(fail);
   }
 
@@ -135,7 +138,8 @@
       '<tr><td>信息比率 / Beta / Alpha</td><td colspan="3">' +
       num(rel.information_ratio) + ' / ' + num(rel.beta) + ' / ' + pct(rel.alpha) + '</td></tr>' +
       '</tbody></table></div>' +
-      '<div class="section"><h2>净值曲线（起点 1.0，副轴回撤）</h2><canvas id="eq" height="90"></canvas></div>' +
+      '<div class="section"><h2>图表 <span class="gran-switch" id="chart-tabs">' + chartTabsHtml() + '</span></h2>' +
+      '<div id="chart-area"></div></div>' +
       periodTable('年度收益统计', m.annual) + periodTable('月度收益统计', m.monthly) +
       positionsSection(positions) + rebalanceSection(rebalances) +
       '<div class="section"><h2>原始数据</h2><p>' +
@@ -148,7 +152,8 @@
       state.benchmark = e.target.value; renderDetail(sid);
     });
     bindGranSwitch(sid);
-    drawChart(eq);
+    bindChartTabs();
+    renderChartTab();
   }
 
   function periodTable(title, rows) {
@@ -220,11 +225,149 @@
   }
 
   function bindGranSwitch(sid) {
-    Array.prototype.forEach.call(document.querySelectorAll('.gran-switch button'), function (btn) {
+    // [data-g] 限定：图表页签容器复用了 .gran-switch 样式 class，不限定会误绑页签按钮（点页签→gran=undefined→422 崩页）
+    Array.prototype.forEach.call(document.querySelectorAll('.gran-switch button[data-g]'), function (btn) {
       btn.addEventListener('click', function () { state.gran = btn.dataset.g; renderDetail(sid); });
     });
     var di = document.getElementById('minute-date');
     if (di) { di.addEventListener('change', function (e) { state.minuteDate = e.target.value; renderDetail(sid); }); }
+  }
+
+  // ---------------- 图表页签（二期：分布图表，spec 2026-06-13）----------------
+  var TABS = [['equity', '净值曲线'], ['returns', '收益分布'], ['drawdowns', '回撤分布'],
+              ['turnover', '换手率'], ['exposure', '仓位'], ['heatmap', '月度热力']];
+
+  function chartTabsHtml() {
+    return TABS.map(function (t) {
+      return '<button data-tab="' + t[0] + '" class="' + (state.tab === t[0] ? 'active' : '') + '">' + t[1] + '</button>';
+    }).join('');
+  }
+
+  function bindChartTabs() {
+    Array.prototype.forEach.call(document.querySelectorAll('#chart-tabs button'), function (btn) {
+      btn.addEventListener('click', function () {
+        state.tab = btn.dataset.tab;
+        Array.prototype.forEach.call(document.querySelectorAll('#chart-tabs button'), function (b) {
+          b.className = b.dataset.tab === state.tab ? 'active' : '';
+        });
+        renderChartTab();   // 用 detail 缓存，零请求
+      });
+    });
+  }
+
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || '#888'; }
+
+  function renderChartTab() {
+    var area = document.getElementById('chart-area');
+    if (!area || !detail) { return; }
+    destroyCharts();   // 页签互斥，全量销毁再画（详情页同时只有一个 chart）
+    var fns = { equity: tabEquity, returns: tabReturns, drawdowns: tabDrawdowns,
+                turnover: tabTurnover, exposure: tabExposure, heatmap: tabHeatmap };
+    fns[state.tab](area);
+  }
+
+  function tabEquity(area) {
+    area.innerHTML = '<canvas id="eq" height="90"></canvas>';
+    drawChart(detail.eq);
+  }
+
+  function tabReturns(area) {
+    var h = detail.dist.return_histogram;
+    if (!h.buckets.length) { area.innerHTML = '<p>数据不足。</p>'; return; }
+    area.innerHTML = '<canvas id="dist-c" height="90"></canvas>';
+    charts.push(new Chart(document.getElementById('dist-c').getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: h.buckets.map(function (b) { return (b.lo * 100).toFixed(1) + '~' + (b.hi * 100).toFixed(1) + '%'; }),
+        datasets: [{ label: '天数', data: h.buckets.map(function (b) { return b.count; }),
+          backgroundColor: h.buckets.map(function (b) { return b.hi <= 0 ? cssVar('--loss') : cssVar('--profit'); }) }],
+      },
+      options: { animation: false, plugins: { legend: { display: false } } },
+    }));
+  }
+
+  function tabDrawdowns(area) {
+    var eps = detail.dist.drawdown_episodes;
+    if (!eps.length) { area.innerHTML = '<p>无回撤事件。</p>'; return; }
+    var rows = eps.map(function (e) {
+      return '<tr><td>' + esc(e.peak_date) + '</td><td>' + esc(e.trough_date) + '</td>' +
+        '<td class="loss">' + pct(e.depth) + '</td><td>' + e.drawdown_days + '</td>' +
+        '<td>' + (e.recovered ? e.recovery_days : '进行中') + '</td></tr>';
+    }).join('');
+    area.innerHTML = '<table class="kpi-table"><thead><tr><th>峰值日</th><th>谷底日</th><th>深度</th>' +
+      '<th>回撤天数</th><th>恢复天数</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<canvas id="dist-c" height="70"></canvas>';
+    charts.push(new Chart(document.getElementById('dist-c').getContext('2d'), {
+      type: 'bar',
+      data: { labels: eps.map(function (e) { return e.peak_date; }),
+        datasets: [{ label: '回撤深度%', data: eps.map(function (e) { return +(e.depth * 100).toFixed(2); }),
+          backgroundColor: cssVar('--loss') }] },
+      options: { animation: false, plugins: { legend: { display: false } } },
+    }));
+  }
+
+  function tabTurnover(area) {
+    var mt = detail.dist.monthly_turnover;
+    if (!mt.length) { area.innerHTML = '<p>无成交。</p>'; return; }
+    var mean = detail.dist.turnover_mean;
+    area.innerHTML = '<canvas id="dist-c" height="90"></canvas>' +
+      '<p class="muted">月度单边换手率 = min(月买入额, 月卖出额) ÷ 月日均总资产；均值 ' + pct(mean) + '</p>';
+    charts.push(new Chart(document.getElementById('dist-c').getContext('2d'), {
+      data: {
+        labels: mt.map(function (r) { return r.month; }),
+        datasets: [
+          { type: 'bar', label: '换手率%', data: mt.map(function (r) { return r.turnover == null ? null : +(r.turnover * 100).toFixed(2); }),
+            backgroundColor: '#0969da' },
+          { type: 'line', label: '均值%', data: mt.map(function () { return mean == null ? null : +(mean * 100).toFixed(2); }),
+            borderColor: '#9a6700', pointRadius: 0, borderWidth: 1.5, borderDash: [6, 4] },
+        ],
+      },
+      options: { animation: false },
+    }));
+  }
+
+  function tabExposure(area) {
+    var ex = detail.dist.exposure;
+    if (!ex.dates.length) { area.innerHTML = '<p>数据不足。</p>'; return; }
+    area.innerHTML = '<canvas id="dist-c" height="90"></canvas>';
+    charts.push(new Chart(document.getElementById('dist-c').getContext('2d'), {
+      type: 'line',
+      data: { labels: ex.dates,
+        datasets: [{ label: '仓位%', data: ex.ratio.map(function (r) { return +(r * 100).toFixed(2); }),
+          borderColor: '#0969da', backgroundColor: 'rgba(9,105,218,.15)', fill: true,
+          pointRadius: 0, borderWidth: 1.5 }] },
+      options: { animation: false, scales: { y: { min: 0, max: 100 } } },
+    }));
+  }
+
+  function tabHeatmap(area) {
+    var monthly = detail.m.monthly || [];
+    if (!monthly.length) { area.innerHTML = '<p>数据不足。</p>'; return; }
+    var byPeriod = {};
+    var years = [];
+    monthly.forEach(function (r) {
+      byPeriod[r.period] = r.strategy_return;
+      var y = r.period.slice(0, 4);
+      if (years.indexOf(y) < 0) { years.push(y); }
+    });
+    var head = '<tr><th>年\\月</th>';
+    for (var mm = 1; mm <= 12; mm++) { head += '<th>' + mm + '月</th>'; }
+    head += '</tr>';
+    var body = years.sort().map(function (y) {
+      var tds = '';
+      for (var i = 1; i <= 12; i++) {
+        var key = y + '-' + (i < 10 ? '0' : '') + i;
+        var v = byPeriod[key];
+        if (v == null) { tds += '<td></td>'; continue; }
+        // 透明度按 |收益| 线性映射，10% 封顶；红涨绿跌（A 股口径，与 --profit/--loss 一致）
+        var a = Math.min(Math.abs(v) / 0.10, 1) * 0.85 + 0.1;
+        var bg = v >= 0 ? 'rgba(207,34,46,' + a.toFixed(2) + ')' : 'rgba(26,127,55,' + a.toFixed(2) + ')';
+        var fg = a >= 0.45 ? '#fff' : 'inherit';   // 低透明度底色配白字不可读 → 用默认前景色
+        tds += '<td style="background:' + bg + ';color:' + fg + '" title="' + esc(key) + ' ' + pct(v) + '">' + pct(v) + '</td>';
+      }
+      return '<tr><th>' + esc(y) + '</th>' + tds + '</tr>';
+    }).join('');
+    area.innerHTML = '<table class="kpi-table heatmap"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
   }
 
   function drawChart(eq) {
