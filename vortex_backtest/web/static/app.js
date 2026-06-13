@@ -504,4 +504,145 @@
     bar.innerHTML = '已选 ' + ids.length + ' 个：' + esc(ids.join(', ')) +
       ' <a href="#/compare/' + ids.map(encodeURIComponent).join(',') + '">对比选中 →</a>';
   }
+
+  // ──────────── 多曲线叠加（日历轴 / 相对日轴），策略详情与对比共用 ────────────
+  var CURVE_PALETTE = ['#0969da', '#9a6700', '#1a7f37', '#cf222e', '#8250df', '#bf3989', '#0550ae', '#e16f24'];
+
+  function drawMultiCurve(canvasId, series, axis) {
+    var canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === 'undefined' || !series.length) { return; }
+    var labels, datasets;
+    if (axis === 'relative') {
+      // 对齐起点：x = 第 N 个交易日；各曲线按自身下标对齐（短曲线点少，自然在前段对齐）
+      var maxLen = series.reduce(function (m, s) { return Math.max(m, s.values.length); }, 0);
+      labels = []; for (var i = 0; i < maxLen; i++) { labels.push('D' + i); }
+      datasets = series.map(function (s, k) {
+        return { label: s.label, data: s.values, borderColor: CURVE_PALETTE[k % CURVE_PALETTE.length],
+          pointRadius: 0, borderWidth: 1.6 };
+      });
+    } else {
+      // 日历轴：并所有日期为统一 x 轴，各曲线缺日填 null（spanGaps 连线）
+      var seen = {};
+      series.forEach(function (s) { s.dates.forEach(function (d) { seen[d] = 1; }); });
+      labels = Object.keys(seen).sort();
+      datasets = series.map(function (s, k) {
+        var byDate = {}; s.dates.forEach(function (d, i) { byDate[d] = s.values[i]; });
+        return { label: s.label, spanGaps: true,
+          data: labels.map(function (d) { return d in byDate ? byDate[d] : null; }),
+          borderColor: CURVE_PALETTE[k % CURVE_PALETTE.length], pointRadius: 0, borderWidth: 1.6 };
+      });
+    }
+    charts.push(new Chart(canvas.getContext('2d'), {
+      type: 'line', data: { labels: labels, datasets: datasets },
+      options: { animation: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top' } } },
+    }));
+  }
+
+  function axisSwitchHtml() {
+    return ['calendar', 'relative'].map(function (a) {
+      return '<button data-axis="' + a + '" class="' + (state.cmp_axis === a ? 'active' : '') + '">' +
+        (a === 'calendar' ? '日历轴' : '对齐起点') + '</button>';
+    }).join('');
+  }
+
+  function bindAxisSwitch(canvasId) {
+    // cmpItems 为当前页缓存的曲线；切轴只销毁重画 canvas，不重取数据
+    Array.prototype.forEach.call(document.querySelectorAll('#axis-sw button'), function (b) {
+      b.addEventListener('click', function () {
+        state.cmp_axis = b.dataset.axis;
+        destroyCharts();
+        Array.prototype.forEach.call(document.querySelectorAll('#axis-sw button'), function (x) {
+          x.className = x.dataset.axis === state.cmp_axis ? 'active' : '';
+        });
+        drawMultiCurve(canvasId, cmpItems, state.cmp_axis);
+      });
+    });
+  }
+
+  // ──────────── 策略详情页 #/strategy/<id> ────────────
+  function renderStrategyDetail(stratId) {
+    destroyCharts();
+    crumbs.innerHTML = '<a href="#/strategies">策略中心</a> / ' + esc(stratId);
+    app.innerHTML = '<div class="section">加载中…</div>';
+    get('/strategies/' + encodeURIComponent(stratId)).then(function (d) {
+      return Promise.all(d.runs.map(function (run) {
+        return get('/sessions/' + run.session_id + '/equity').then(function (eq) {
+          return { run: run, eq: eq };
+        });
+      })).then(function (curves) { drawStrategyDetail(d, curves); });
+    }).catch(fail);
+  }
+
+  function drawStrategyDetail(d, curves) {
+    var runRows = d.runs.map(function (r) {
+      return '<tr><td><a href="#/session/' + esc(r.session_id) + '">' + esc(r.session_id.slice(0, 8)) + '…</a></td>' +
+        '<td>' + esc(r.start_date || '') + ' ~ ' + esc(r.end_date || '') + '</td>' +
+        '<td>' + esc(r.status) + '</td>' +
+        '<td class="' + cls(r.total_return) + '">' + pct(r.total_return) + '</td>' +
+        '<td>' + pct(r.annual_return) + '</td><td>' + num(r.sharpe) + '</td>' +
+        '<td>' + pct(r.max_drawdown) + '</td>' +
+        '<td>' + esc(String(r.created_at || '').slice(0, 16).replace('T', ' ')) + '</td></tr>';
+    }).join('');
+    app.innerHTML =
+      '<div class="section"><h2>' + esc(d.strategy_id) + '</h2><p class="muted">回测数 ' + d.n_runs +
+      ' · 账户 ' + esc(d.accounts.join(', ')) +
+      ' · 最新一次 <a href="#/session/' + esc(d.latest.session_id) + '">' + esc(d.latest.session_id.slice(0, 8)) +
+      '…</a>（' + pct(d.latest.total_return) + '）· 历史最优 <a href="#/session/' + esc(d.best.session_id) + '">' +
+      esc(d.best.session_id.slice(0, 8)) + '…</a>（' + pct(d.best.total_return) + '）</p></div>' +
+      '<div class="section"><h2>历次回测</h2><table class="kpi-table"><thead><tr><th>会话</th><th>区间</th>' +
+      '<th>状态</th><th>总收益</th><th>年化</th><th>夏普</th><th>最大回撤</th><th>发起时间</th></tr></thead><tbody>' +
+      runRows + '</tbody></table></div>' +
+      '<div class="section"><h2>净值叠加 <span class="gran-switch" id="axis-sw">' + axisSwitchHtml() + '</span></h2>' +
+      '<canvas id="sd-c" height="90"></canvas></div>';
+    cmpItems = curves.map(function (c) {
+      return { label: c.run.session_id.slice(0, 8), dates: c.eq.dates, values: c.eq.strategy };
+    });
+    drawMultiCurve('sd-c', cmpItems, state.cmp_axis);
+    bindAxisSwitch('sd-c');
+  }
+
+  // ──────────── 对比视图 #/compare/<stratId,stratId,...> ────────────
+  function renderCompare(stratIds) {
+    destroyCharts();
+    crumbs.innerHTML = '<a href="#/strategies">策略中心</a> / 对比';
+    app.innerHTML = '<div class="section">加载中…</div>';
+    get('/strategies').then(function (rows) {
+      var byId = {}; rows.forEach(function (r) { byId[r.strategy_id] = r; });
+      var picks = stratIds.filter(function (id) { return byId[id]; });
+      if (picks.length < 2) {
+        app.innerHTML = '<div class="error-banner">对比需要 ≥2 个有效策略。</div>'; return;
+      }
+      return Promise.all(picks.map(function (id) {
+        var sess = byId[id].latest.session_id;   // 各策略取最新一次回测做代表
+        return Promise.all([
+          get('/sessions/' + sess + '/equity'),
+          get('/sessions/' + sess + '/metrics'),
+        ]).then(function (res) { return { id: id, eq: res[0], m: res[1] }; });
+      })).then(drawCompare);
+    }).catch(fail);
+  }
+
+  var CMP_METRICS = [['总收益', 'total_return'], ['年化', 'annual_return'], ['夏普', 'sharpe'],
+                     ['最大回撤', 'max_drawdown'], ['波动率', 'volatility']];
+
+  function drawCompare(items) {
+    var head = '<tr><th>指标</th>' + items.map(function (it) { return '<th>' + esc(it.id) + '</th>'; }).join('') + '</tr>';
+    var mbody = CMP_METRICS.map(function (mk) {
+      return '<tr><td>' + mk[0] + '</td>' + items.map(function (it) {
+        var v = it.m.strategy[mk[1]];
+        var disp = mk[1] === 'sharpe' ? num(v) : pct(v);
+        var c = (mk[1] === 'total_return' || mk[1] === 'annual_return') ? cls(v) : '';
+        return '<td class="' + c + '">' + disp + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    app.innerHTML =
+      '<div class="section"><h2>多策略净值叠加 <span class="gran-switch" id="axis-sw">' + axisSwitchHtml() + '</span></h2>' +
+      '<canvas id="cmp-c" height="90"></canvas></div>' +
+      '<div class="section"><h2>指标并排</h2><table class="kpi-table"><thead>' + head +
+      '</thead><tbody>' + mbody + '</tbody></table></div>';
+    cmpItems = items.map(function (it) { return { label: it.id, dates: it.eq.dates, values: it.eq.strategy }; });
+    drawMultiCurve('cmp-c', cmpItems, state.cmp_axis);
+    bindAxisSwitch('cmp-c');
+  }
 })();
