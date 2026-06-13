@@ -170,3 +170,27 @@ def test_rebalances_pagination(client):
 def test_benchmarks_catalog(client):
     items = client.get("/benchmarks").json()
     assert {"code": "000300.SH", "name": "沪深300", "source": "index_daily"} in items
+
+
+def test_distributions_shape(client):
+    d = client.get(f"/sessions/{SID}/distributions").json()
+    # 收益直方图：基线序列日收益 +1% / +0.198% / 0% → 三个桶各 1
+    h = d["return_histogram"]
+    assert h["bucket_width"] == 0.005 and len(h["buckets"]) == 3
+    assert sum(b["count"] for b in h["buckets"]) == 3
+    # 回撤事件：fixture 序列单调不降 → 无回撤
+    assert d["drawdown_episodes"] == []
+    # 换手率：2 月 min(买100,卖112)/日均资产 (1010+1012+1012)/3
+    mt = d["monthly_turnover"]
+    assert len(mt) == 1 and mt[0]["month"] == "2026-02"
+    # abs=1e-6：实现按 round(·,6) 落盘，残差超 approx 默认 rel 容差
+    assert mt[0]["turnover"] == pytest.approx(100.0 / ((1010.0 + 1012.0 + 1012.0) / 3), abs=1e-6)
+    assert d["turnover_mean"] == pytest.approx(mt[0]["turnover"], abs=1e-6)
+    # 仓位序列：02-03 EOD 110/1010，02-04 起空仓
+    ex = d["exposure"]
+    assert ex["dates"] == ["2026-02-03", "2026-02-04", "2026-02-05"]
+    assert ex["ratio"][0] == pytest.approx(110.0 / 1010.0, abs=1e-6) and ex["ratio"][1] == 0.0
+
+
+def test_distributions_404(client):
+    assert client.get("/sessions/nope/distributions").status_code == 404

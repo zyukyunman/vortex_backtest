@@ -526,6 +526,24 @@ def create_app(state_dir: Path | None = None, *, run_worker: bool = True) -> Fas
         events = analytics.rebalance_events(trades, _daily_rows(data_store, session_id))
         return events[offset:offset + limit]
 
+    @app.get("/sessions/{session_id}/distributions")
+    def session_distributions(
+        session_id: str, data_store: DataStore = Depends(get_store)
+    ) -> dict:
+        """分布图表聚合供数（spec 2026-06-13）：直方图/回撤事件/月度换手/仓位序列一次取齐。"""
+        row = _session_or_404(data_store, session_id)
+        daily = _daily_rows(data_store, session_id)
+        strat = _strategy_series(row, daily)  # 含期初本金基线点，与 metrics 同口径
+        trades = _read_jsonl(_session_dir(data_store, session_id) / "trades.jsonl")
+        turnover = analytics.monthly_turnover(trades, daily)
+        return {
+            "return_histogram": analytics.return_histogram(strat),
+            "drawdown_episodes": analytics.drawdown_episodes(strat),
+            "monthly_turnover": turnover["monthly"],
+            "turnover_mean": turnover["mean"],
+            "exposure": analytics.exposure_series(daily),
+        }
+
     @app.get("/benchmarks")
     def benchmarks() -> list[dict]:
         return _list_benchmarks()
