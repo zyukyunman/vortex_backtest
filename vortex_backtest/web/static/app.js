@@ -24,6 +24,37 @@
   function cls(x) { return x == null ? '' : (x >= 0 ? 'profit' : 'loss'); }
   function destroyCharts() { charts.forEach(function (c) { c.destroy(); }); charts = []; }
 
+  // ---------------- 主题（浅/深/跟随系统 三态，localStorage 记忆）----------------
+  var THEME_MODES = ['light', 'dark', 'system'];
+  var THEME_LABEL = { light: '☀️ 浅色', dark: '🌙 深色', system: '🖥️ 跟随系统' };
+  var _mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme:dark)') : null;
+  function themeMode() { return localStorage.getItem('vbt-theme') || 'system'; }
+  function applyTheme(mode) {
+    var dark = mode === 'dark' || (mode === 'system' && _mql && _mql.matches);
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    localStorage.setItem('vbt-theme', mode);
+    var btn = document.getElementById('theme-btn');
+    if (btn) { btn.textContent = THEME_LABEL[mode]; }
+    if (detail) { renderChartTab(); }   // 重画当前图，让随主题的颜色（热力图/分布图）刷新
+  }
+  function initTheme() {
+    var tb = document.getElementById('toolbar');
+    if (tb && !document.getElementById('theme-btn')) {
+      var btn = document.createElement('button');
+      btn.id = 'theme-btn';
+      btn.title = '切换主题：浅 → 深 → 跟随系统';
+      btn.addEventListener('click', function () {
+        applyTheme(THEME_MODES[(THEME_MODES.indexOf(themeMode()) + 1) % THEME_MODES.length]);
+      });
+      tb.appendChild(btn);
+    }
+    if (_mql && _mql.addEventListener) {   // 跟随系统时，系统主题变化实时反映
+      _mql.addEventListener('change', function () { if (themeMode() === 'system') { applyTheme('system'); } });
+    }
+    applyTheme(themeMode());
+  }
+
+  initTheme();
   window.addEventListener('hashchange', route);
   route();
 
