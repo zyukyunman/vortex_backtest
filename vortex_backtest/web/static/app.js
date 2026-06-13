@@ -361,7 +361,7 @@
         if (v == null) { tds += '<td></td>'; continue; }
         // 透明度按 |收益| 线性映射，10% 封顶；红涨绿跌（A 股口径，与 --profit/--loss 一致）
         var a = Math.min(Math.abs(v) / 0.10, 1) * 0.85 + 0.1;
-        var bg = v >= 0 ? 'rgba(207,34,46,' + a.toFixed(2) + ')' : 'rgba(26,127,55,' + a.toFixed(2) + ')';
+        var bg = 'rgba(var(' + (v >= 0 ? '--profit-rgb' : '--loss-rgb') + '),' + a.toFixed(2) + ')';  // 走主题变量，深色主题自动适配
         var fg = a >= 0.45 ? '#fff' : 'inherit';   // 低透明度底色配白字不可读 → 用默认前景色
         tds += '<td style="background:' + bg + ';color:' + fg + '" title="' + esc(key) + ' ' + pct(v) + '">' + pct(v) + '</td>';
       }

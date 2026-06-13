@@ -2,11 +2,13 @@
   --bg:#ffffff;--surface:#f7f8fa;--border:#e3e6eb;--text:#1a1f29;--muted:#5b6472;
   /* A 股口径：红涨(profit)绿跌(loss)，全文唯一定义来源 */
   --accent:#1d4ed8;--profit:#cf222e;--loss:#1a7f37;--warn:#b45309;--running:#1d4ed8;--idle:#4b5563;
+  --profit-rgb:207,34,46;--loss-rgb:26,127,55;  /* 热力图按 |收益| 调 alpha 用，随主题切换 */
   --mono:ui-monospace,"SF Mono",Menlo,monospace;--radius:8px;
 }
 [data-theme=dark]{
   --bg:#0f1419;--surface:#1a212b;--border:#2b333f;--text:#e6e9ee;--muted:#9aa4b2;
   --accent:#60a5fa;--profit:#ff7b72;--loss:#3fb950;--warn:#fbbf24;--running:#60a5fa;--idle:#9ca3af;
+  --profit-rgb:255,123,114;--loss-rgb:63,185,80;  /* 深色主题适配亮度的红绿 */
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"PingFang SC",Roboto,sans-serif}

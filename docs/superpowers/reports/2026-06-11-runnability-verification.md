@@ -113,8 +113,9 @@ workspace 共 **57 个数据集**，日频面覆盖完整且新鲜（多数 2026
 ## 5. 跨仓行动项（vortex_data 侧，本 session 只读不改）
 
 1. ~~补抓 `stk_mins`~~ → **已完成（2026-06-12 实测）**：5,527 标的 82 交易日零缺口。
-2. 设置 `VORTEX_DATA_DASHBOARD_TOKEN`（vortex_data/.env）并重启——生产形态网关路的唯一
-   剩余前提（网关代码路径已经集成测试用测试 token 验证通过）。用户主用本地直读，转待选。
+2. ~~设置 `VORTEX_DATA_DASHBOARD_TOKEN` 跑生产网关端到端~~ → **已取消（2026-06-13 用户决定）**：
+   回测无需真实账户口径，那只是测试性质；用户后续主动提供券商账单做对照（`reconcile_statement.py
+   --session-dir`，已适配）。网关路核心功能（RAW+N8 分红入账）保留，仅不再追"配 token 跑端到端"。
 3. ~~生成 `stk_mins_by_date` 镜像~~ → **已完成**：82 天同窗口。
 4. ~~`dividend` schema 核验~~ → **已实测通过**：含 `ex_date`+`effective_from`，非空 ex_date
    1,838 行，N8 分红入账数据就绪，无需重抓。
