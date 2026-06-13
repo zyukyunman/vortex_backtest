@@ -17,6 +17,7 @@
         python examples/session_scenarios.py bank_pyramid   # 分钟分批：金字塔建仓 + 次日分批减仓
         python examples/session_scenarios.py bank_limit     # 限价单 + 撤单：limit 校验 / cancel
         python examples/session_scenarios.py bank_frenzy    # 满仓轮动狂点：买齐 10 只逐日轮换
+        python examples/session_scenarios.py multi_run     # 同策略跨 3 区间多次回测（喂排行榜 n_runs>1）
         python examples/session_scenarios.py all
 
 环境变量：
@@ -59,8 +60,10 @@ def _account(name: str, cash: float = 1_000_000) -> str:
     return name
 
 
-def _open(account: str, **kw) -> str:
-    return _post("/sessions", {"account_id": account, **kw})["session_id"]
+def _open(account: str, *, strategy_id: str | None = None, **kw) -> str:
+    # 不显式给 strategy_id 时默认用账户名——避免历史默认值 "session" 把互不相关场景错塞一组
+    return _post("/sessions", {"account_id": account,
+                               "strategy_id": strategy_id or account, **kw})["session_id"]
 
 
 def _report(sid: str) -> None:
@@ -314,11 +317,34 @@ def scenario_bank_frenzy() -> None:
     _report(sid)
 
 
+def scenario_multi_run() -> None:
+    """同一策略多次回测：strategy_id='bank_momentum' 在 3 个不同区间各跑一次 close。
+
+    制造 n_runs=3，让排行榜的『最新一次 / 历史最优』有区分（同一账户、买入持有招商银行至区间末）。
+    区间起止均取自 ROTATE_DAYS（已确认的真实交易日），避免落在无数据日。
+    """
+    print("[多次回测] bank_momentum 跨 3 区间各跑一次（n_runs=3）")
+    sym = "600036.SH"  # 招商银行
+    acc = _account("demo_momentum", cash=20_000_000)
+    windows = [("2026-02-09", "2026-03-10"), ("2026-03-17", "2026-04-15"), ("2026-04-22", "2026-05-18")]
+    for i, (start, end) in enumerate(windows):
+        sid = _open(acc, strategy_id="bank_momentum", level="daily",
+                    start_date=start, end_date=end, universe=[sym], fill_timing="next_bar")
+        _post(f"/sessions/{sid}/advance", {
+            "request_id": f"mom{i}_buy", "to": f"{start}T15:00:00",
+            "orders": [{"request_id": f"mb{i}", "symbol": sym, "side": 1, "quantity": 200_000,
+                        "trade_date": start, "exec_time": "09:35"}]})
+        _post(f"/sessions/{sid}/advance", {"request_id": f"mom{i}_end", "to": f"{end}T15:00:00"})
+        _post(f"/sessions/{sid}/close", {})
+        _report(sid)
+
+
 SCENARIOS = {
     "daily": scenario_daily, "minute": scenario_minute, "scan": scenario_scan,
     "progressive": scenario_progressive, "replay": scenario_replay,
     "bank_rotate": scenario_bank_rotate, "bank_pyramid": scenario_bank_pyramid,
     "bank_limit": scenario_bank_limit, "bank_frenzy": scenario_bank_frenzy,
+    "multi_run": scenario_multi_run,
 }
 
 
