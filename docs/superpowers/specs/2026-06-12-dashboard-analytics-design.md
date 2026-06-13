@@ -140,9 +140,9 @@ cost_basis, last_price, market_value, unrealized_pnl, unrealized_pnl_ratio, weig
 
 ## 9. 二期 backlog（本 spec 不实现，记录以防丢）
 
-- 分布类图表：回撤分布、换手率分布、仓位分布、月度收益热力图。
-- 策略中心/排行榜：按 strategy_id 聚合历次会话、多策略对比（旧 design/13 概念在会话模型下重建）。
-- `web/guide.html` 静态文档站内容同步更新（仍是旧 API 叙述）。
+- ~~分布类图表：回撤分布、换手率分布、仓位分布、月度收益热力图~~ → **已完成（2026-06-13，spec 2026-06-13-distribution-charts）**：收益/回撤/换手/仓位分布 + 月度热力，六图表页签 + distributions 端点。
+- ~~`web/guide.html` 静态文档站内容同步更新~~ → **已完成（同上）**：整页重写对齐 sessions。
+- 策略中心/排行榜：按 strategy_id 聚合历次会话、多策略对比（旧 design/13 概念在会话模型下重建）。**待多策略真实产生后再做。**
 - 回测配置区（截图里的基准/交易成本选择联动重跑）——依赖"从看板发起回测"，需写接口鉴权联动，单独议。
 
 ## 10. 范围边界
