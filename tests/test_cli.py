@@ -21,6 +21,12 @@ def test_cli_serve_default_port_is_8766(monkeypatch: pytest.MonkeyPatch) -> None
     assert args.port == 8766  # registry.yml 规范端口（8767 属 vortex_qmt 实盘）
 
 
+def test_cli_serve_port_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VORTEX_BACKTEST_PORT", "9999")
+    args = build_parser().parse_args(["serve"])
+    assert args.port == 9999
+
+
 @pytest.mark.parametrize(
     "removed",
     [
