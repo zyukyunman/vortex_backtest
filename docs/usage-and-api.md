@@ -163,6 +163,7 @@ curl -s $B/sessions/$SID/summary
 | GET | `/sessions/{id}/equity?benchmark=` | 起点 1.0 对齐净值曲线 + 逐日回撤（含期初本金基线点） |
 | GET | `/sessions/{id}/positions?granularity=daily\|weekly\|hourly\|minute&date=&week=&limit=&offset=` | 多粒度持仓快照（含权重；minute 须带 date） |
 | GET | `/sessions/{id}/rebalances?limit=&offset=` | 调仓事件（按日聚合买卖 + 前后持仓 diff + 费用） |
+| GET | `/sessions/{id}/distributions` | 分布图表供数：日收益直方图 / Top-10 回撤事件 / 月度单边换手率 / 仓位水平序列 |
 | GET | `/benchmarks` | 可选基准目录（常用指数 + 申万行业全量） |
 
 ---
