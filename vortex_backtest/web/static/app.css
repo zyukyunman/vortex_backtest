@@ -74,3 +74,11 @@ tr.row:hover{background:var(--surface)}
 .gran-switch button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 details.rebalance{border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin:8px 0}
 details.rebalance summary{cursor:pointer;font-weight:600}
+/* ---- 策略中心 a11y/打磨（2026-06-13）---- */
+.kpi-table{font-variant-numeric:tabular-nums}                  /* 数字位对齐(不换字体) */
+.sortable-btn{background:none;border:0;color:inherit;font:inherit;cursor:pointer;padding:3px 0;display:inline-flex;gap:3px;align-items:center;justify-content:flex-end;width:100%}
+.sortable-btn:hover{color:var(--accent)}
+.lowconf{color:var(--muted)}                                  /* 短样本风险列：达标灰(--muted 5.6:1)，不用 opacity */
+.linklike{background:none;border:0;color:var(--accent);font:inherit;cursor:pointer;padding:0;text-decoration:underline}
+[data-theme=dark] .gran-switch button.active{color:#0b0f14}   /* 暗色激活态深字配浅蓝 accent(修白字低对比) */
+@media(max-width:760px){.kpi-table{display:block;overflow-x:auto;white-space:nowrap}}

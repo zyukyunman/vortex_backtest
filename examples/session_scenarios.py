@@ -102,7 +102,7 @@ def scenario_daily() -> None:
     """日频：收盘出信号 → 次日开盘成交（fill_timing=next_bar，to=next_day）。"""
     print("[日频选股] 收盘决策、次日开盘成交")
     acc = _account("demo_daily")
-    sid = _open(acc, level="daily", start_date="2026-06-03", end_date="2026-06-05",
+    sid = _open(acc, strategy_id="daily", level="daily", start_date="2026-06-03", end_date="2026-06-05",
                 universe=["600519.SH"], fill_timing="next_bar")
     # 第1天收盘决策买入（next_bar → 次日开盘成交）
     ctx = _post(f"/sessions/{sid}/advance", {
@@ -119,7 +119,7 @@ def scenario_minute() -> None:
     """分钟：精确分钟下单（this_bar + exec_time）。"""
     print("[分钟择时] 09:35 买、14:55 卖，当根成交")
     acc = _account("demo_minute")
-    sid = _open(acc, level="1min", start_date="2026-06-03", end_date="2026-06-03",
+    sid = _open(acc, strategy_id="minute", level="1min", start_date="2026-06-03", end_date="2026-06-03",
                 universe=["600519.SH"], fill_timing="this_bar")
     _post(f"/sessions/{sid}/advance", {
         "orders": [{"request_id": "m1", "symbol": "600519.SH", "side": 1, "quantity": 100, "exec_time": "09:35"}],
@@ -139,7 +139,7 @@ def scenario_scan() -> None:
     """
     print("[全市场扫描] /data op=topN 选股 → set_universe → 交易")
     acc = _account("demo_scan")
-    sid = _open(acc, level="1min", start_date="2026-06-03", end_date="2026-06-04",
+    sid = _open(acc, strategy_id="scan", level="1min", start_date="2026-06-03", end_date="2026-06-04",
                 universe=[], fill_timing="next_bar")
     # 第1步：先推进到某时刻，再问"全市场涨幅/估值 topN"（这里示意 valuation 的 pe_ttm 反向 topN=低估）
     scan = _post(f"/sessions/{sid}/data", {
@@ -164,7 +164,7 @@ def scenario_progressive() -> None:
     """循序渐进：先小股池取历史窗口 → 据此缩/换股池 → 再 advance。股池一次声明后粘住。"""
     print("[循序渐进取数] 取窗口 → 缩股池 → 推进")
     acc = _account("demo_prog")
-    sid = _open(acc, level="1min", start_date="2026-06-03", end_date="2026-06-03",
+    sid = _open(acc, strategy_id="progressive", level="1min", start_date="2026-06-03", end_date="2026-06-03",
                 universe=["600519.SH", "000001.SZ"], fill_timing="next_bar")
     hist = _post(f"/sessions/{sid}/data", {
         "datasets": [{"dataset": "stk_mins", "symbols": "universe",
@@ -185,7 +185,7 @@ def scenario_replay() -> None:
     """A 特例：决策全已知 → 订单全预提交、一路 advance 到 end，从不调 /data。"""
     print("[A 特例·订单回放] 订单全预提交，一次推到底")
     acc = _account("demo_replay")
-    sid = _open(acc, level="1min", start_date="2026-06-03", end_date="2026-06-04",
+    sid = _open(acc, strategy_id="replay", level="1min", start_date="2026-06-03", end_date="2026-06-04",
                 universe=["600519.SH"], fill_timing="this_bar")
     _post(f"/sessions/{sid}/advance", {
         "orders": [
@@ -207,7 +207,7 @@ def scenario_bank_rotate() -> None:
     """
     print("[银行股·日线轮动] 10 只银行股间高频轮换，跨全窗口")
     acc = _account("demo_bank_rotate", cash=20_000_000)
-    sid = _open(acc, level="daily", start_date="2026-02-02", end_date="2026-06-09",
+    sid = _open(acc, strategy_id="bank_rotate", level="daily", start_date="2026-02-02", end_date="2026-06-09",
                 universe=BANK_CODES, fill_timing="next_bar")
     qty, held, rid = 100_000, [], 0
     for i, day in enumerate(["2026-02-02"] + ROTATE_DAYS):
@@ -238,7 +238,7 @@ def scenario_bank_pyramid() -> None:
     print("[银行股·分钟分批建减仓] 平安银行金字塔建仓 + 次日分批减仓")
     sym = "000001.SZ"
     acc = _account("demo_bank_pyramid", cash=20_000_000)
-    sid = _open(acc, level="1min", start_date="2026-02-03", end_date="2026-02-04",
+    sid = _open(acc, strategy_id="bank_pyramid", level="1min", start_date="2026-02-03", end_date="2026-02-04",
                 universe=[sym], fill_timing="this_bar")
     buys = [("09:35", 20_000), ("10:30", 30_000), ("11:20", 40_000), ("13:30", 50_000), ("14:45", 60_000)]
     orders = [{"request_id": f"pb{i}", "symbol": sym, "side": 1, "quantity": q,
@@ -262,7 +262,7 @@ def scenario_bank_limit() -> None:
     print("[银行股·限价单+撤单] 工商银行 limit 校验 / cancel")
     sym = "601398.SH"  # 工行 ~7 元
     acc = _account("demo_bank_limit", cash=20_000_000)
-    sid = _open(acc, level="1min", start_date="2026-02-03", end_date="2026-02-04",
+    sid = _open(acc, strategy_id="bank_limit", level="1min", start_date="2026-02-03", end_date="2026-02-04",
                 universe=[sym], fill_timing="next_bar")
     # 1) 限价高于市价 → 成交
     ctx = _post(f"/sessions/{sid}/advance", {"request_id": "lim1", "to": "2026-02-03T10:00:00",
@@ -292,7 +292,7 @@ def scenario_bank_frenzy() -> None:
     """满仓轮动狂点：一次买齐 10 只银行股，之后逐日卖 3 只买回 3 只制造极高换手。"""
     print("[银行股·满仓轮动狂点] 买齐 10 只 + 逐日轮换")
     acc = _account("demo_bank_frenzy", cash=20_000_000)
-    sid = _open(acc, level="daily", start_date="2026-02-02", end_date="2026-03-13",
+    sid = _open(acc, strategy_id="bank_frenzy", level="daily", start_date="2026-02-02", end_date="2026-03-13",
                 universe=BANK_CODES, fill_timing="next_bar")
     qty = 30_000
     orders = [{"request_id": f"f0_{i}", "symbol": c, "side": 1, "quantity": qty,

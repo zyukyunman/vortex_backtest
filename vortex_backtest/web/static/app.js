@@ -5,7 +5,7 @@
   var crumbs = document.getElementById('crumbs');
   var charts = [];
   var state = { benchmark: '000300.SH', gran: 'daily', minuteDate: '', benchmarks: [], account: '', tab: 'equity',
-                strat_sort: 'total_return', cmp_axis: 'calendar' };
+                strat_sort: 'total_return', strat_dir: 'desc', cmp_axis: 'calendar' };
   var detail = null;   // 详情页数据缓存 {sid, m, eq, dist}：切页签零请求
   var cmpSel = {};     // 排行榜对比篮：{strategy_id: true}
   var cmpItems = [];   // 叠加图曲线缓存 [{label, dates, values}]：切轴重画零请求
@@ -103,21 +103,25 @@
     var shown = state.account
       ? items.filter(function (it) { return it.row.account_id === state.account; }) : items;
     var html = '<p>' + acctSel + '</p>' +
-      '<table class="kpi-table"><thead><tr><th>会话</th><th>账户</th><th>状态</th><th>区间</th>' +
-      '<th>总收益</th><th>最大回撤</th><th>总资产</th><th>更新时间</th></tr></thead><tbody>';
+      '<table class="kpi-table"><caption class="sr-only">回测会话列表</caption><thead><tr><th scope="col">账户</th><th scope="col">状态</th><th scope="col">区间</th>' +
+      '<th scope="col">总收益</th><th scope="col">最大回撤</th><th scope="col">总资产</th><th scope="col">更新时间</th><th scope="col">会话</th></tr></thead><tbody>';
     shown.forEach(function (it) {
       var r = it.row, s = it.sum;
-      html += '<tr><td><a href="#/session/' + esc(r.session_id) + '">' + esc(r.session_id.slice(0, 8)) + '…</a></td>' +
-        '<td>' + esc(r.account_id) + '</td><td>' + esc(r.status) + '</td>' +
+      html += '<tr><td><button class="linklike acct-link" data-acct="' + esc(r.account_id) + '">' + esc(r.account_id) + '</button></td>' +
+        '<td>' + esc(r.status) + '</td>' +
         '<td>' + esc(r.start_date || '') + ' ~ ' + esc(r.end_date || '') + '</td>' +
         '<td class="' + cls(s.total_return) + '">' + pct(s.total_return) + '</td>' +
         '<td>' + pct(s.max_drawdown) + '</td><td>' + money(s.total_value) + '</td>' +
-        '<td>' + esc(String(r.updated_at || '').slice(0, 16).replace('T', ' ')) + '</td></tr>';
+        '<td>' + esc(String(r.updated_at || '').slice(0, 16).replace('T', ' ')) + '</td>' +
+        '<td><a href="#/session/' + esc(r.session_id) + '">' + esc(r.session_id.slice(0, 8)) + '…</a></td></tr>';
     });
     document.getElementById('list').innerHTML = html + '</tbody></table>';
     document.getElementById('acct-sel').addEventListener('change', function (e) {
       state.account = e.target.value;
       renderListTable(items, accounts);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.acct-link'), function (b) {
+      b.addEventListener('click', function () { state.account = b.dataset.acct; renderListTable(items, accounts); });
     });
   }
 
@@ -436,24 +440,33 @@
   var STRAT_COLS = [['total_return', '总收益'], ['annual_return', '年化'],
                     ['sharpe', '夏普'], ['max_drawdown', '最大回撤']];
 
-  // 短样本护栏：年化/夏普/波动率等风险调整与年化指标 <60 交易日时置灰 + title（累计收益/回撤不受此限，沿用一期 design13 §7.2）
-  function lowConfAttr(lowConf, key) {
-    return (lowConf && (key === 'annual_return' || key === 'sharpe' || key === 'volatility'))
-      ? ' style="opacity:.5" title="样本<60交易日，风险指标仅供参考"' : '';
+  function colLabel(key) {
+    for (var i = 0; i < STRAT_COLS.length; i++) { if (STRAT_COLS[i][0] === key) { return STRAT_COLS[i][1]; } }
+    return key;
   }
+
+  // 短样本护栏：年化/夏普/波动率等风险调整/年化指标 <60 交易日时——文字转 --muted(达标对比 5.6:1) + 加 * 标记
+  // （非颜色信号，配表尾图例，替代旧的 opacity 置灰——opacity 会跌破对比阈值）；累计收益/回撤不受此限（design13 §7.2）。
+  var RISK_KEYS = { annual_return: 1, sharpe: 1, volatility: 1 };
 
   function fmtStratCell(key, v, lowConf) {
-    var disp = key === 'sharpe' ? num(v) : pct(v);
-    var c = (key === 'total_return' || key === 'annual_return') ? cls(v) : '';
-    return '<td class="' + c + '"' + lowConfAttr(lowConf, key) + '>' + disp + '</td>';
+    var dim = lowConf && RISK_KEYS[key];
+    var disp = (key === 'sharpe' ? num(v) : pct(v)) + (dim ? '*' : '');
+    var c = dim ? 'lowconf' : ((key === 'total_return' || key === 'annual_return') ? cls(v) : '');
+    return '<td class="' + c + '">' + disp + '</td>';
   }
 
+  // 排序默认方向：收益/年化/夏普越大越好(desc)；最大回撤默认 asc(最深/最差在前)
+  var SORT_DEFAULT_DIR = { total_return: 'desc', annual_return: 'desc', sharpe: 'desc', max_drawdown: 'asc' };
+
   function sortStrategies(rows) {
-    var key = state.strat_sort;
+    var key = state.strat_sort, mul = state.strat_dir === 'asc' ? 1 : -1;
     return rows.slice().sort(function (a, b) {
       var av = a.latest[key], bv = b.latest[key];
-      av = av == null ? -Infinity : av; bv = bv == null ? -Infinity : bv;
-      return bv - av;   // 一律降序（收益/夏普越大越好；回撤为负数，越大=越浅亦合理）
+      if (av == null && bv == null) { return 0; }   // null 永远沉底（与方向无关）
+      if (av == null) { return 1; }
+      if (bv == null) { return -1; }
+      return (av - bv) * mul;
     });
   }
 
@@ -471,27 +484,41 @@
 
   function renderLeaderboard(rows) {
     var sorted = sortStrategies(rows);
+    var anyLow = rows.some(function (r) { return r.latest.low_confidence; });
     var heads = STRAT_COLS.map(function (c) {
-      return '<th class="sortable" data-k="' + c[0] + '" style="cursor:pointer">' + c[1] +
-        (state.strat_sort === c[0] ? ' ▾' : '') + '</th>';
+      var active = state.strat_sort === c[0];
+      var arrow = active ? (state.strat_dir === 'asc' ? ' ▲' : ' ▼') : '';
+      var ariaSort = active ? (state.strat_dir === 'asc' ? 'ascending' : 'descending') : 'none';
+      return '<th scope="col" aria-sort="' + ariaSort + '">' +
+        '<button type="button" class="sortable-btn" data-k="' + c[0] + '">' + c[1] + arrow + '</button></th>';
     }).join('');
     var body = sorted.map(function (r) {
       var checked = cmpSel[r.strategy_id] ? ' checked' : '';
       return '<tr>' +
-        '<td><input type="checkbox" class="cmp-cb" data-sid="' + esc(r.strategy_id) + '"' + checked + '></td>' +
+        '<td><input type="checkbox" class="cmp-cb" aria-label="对比 ' + esc(r.strategy_id) + '" data-sid="' + esc(r.strategy_id) + '"' + checked + '></td>' +
         '<td><a href="#/strategy/' + encodeURIComponent(r.strategy_id) + '">' + esc(r.strategy_id) + '</a></td>' +
         '<td>' + r.n_runs + '</td>' +
         '<td>' + esc(r.accounts.join(', ')) + '</td>' +
         STRAT_COLS.map(function (c) { return fmtStratCell(c[0], r.latest[c[0]], r.latest.low_confidence); }).join('') +
         '<td class="' + cls(r.best.total_return) + '">' + pct(r.best.total_return) + '</td>' +
-        '<td>' + esc(r.first_run || '') + ' ~ ' + esc(r.last_run || '') + '</td></tr>';
+        '<td>' + esc(r.latest.start_date || '') + ' ~ ' + esc(r.latest.end_date || '') + '</td></tr>';
     }).join('');
     document.getElementById('lb').innerHTML =
       '<div id="cmp-bar" class="muted" style="margin-bottom:8px"></div>' +
-      '<table class="kpi-table"><thead><tr><th></th><th>策略</th><th>回测数</th><th>账户</th>' +
-      heads + '<th>历史最优</th><th>区间</th></tr></thead><tbody>' + body + '</tbody></table>';
-    Array.prototype.forEach.call(document.querySelectorAll('th.sortable'), function (th) {
-      th.addEventListener('click', function () { state.strat_sort = th.dataset.k; renderLeaderboard(rows); });
+      '<p class="note">指标列取各策略『最新一次』回测；『历史最优』按总收益、『最近区间』为最新一次的回测区间。' +
+      (anyLow ? ' <span class="lowconf">*</span> = 样本&lt;60 交易日，风险指标仅供参考。' : '') + '</p>' +
+      '<table class="kpi-table"><caption class="sr-only">策略排行榜，当前按' + colLabel(state.strat_sort) +
+      (state.strat_dir === 'asc' ? '升序' : '降序') + '</caption>' +
+      '<thead><tr><th scope="col"><span class="sr-only">对比选择</span></th><th scope="col">策略</th>' +
+      '<th scope="col">回测数</th><th scope="col">账户</th>' +
+      heads + '<th scope="col">历史最优</th><th scope="col">最近区间</th></tr></thead><tbody>' + body + '</tbody></table>';
+    Array.prototype.forEach.call(document.querySelectorAll('.sortable-btn'), function (btn) {
+      btn.addEventListener('click', function () {
+        var k = btn.dataset.k;
+        if (state.strat_sort === k) { state.strat_dir = state.strat_dir === 'asc' ? 'desc' : 'asc'; }
+        else { state.strat_sort = k; state.strat_dir = SORT_DEFAULT_DIR[k] || 'desc'; }
+        renderLeaderboard(rows);
+      });
     });
     Array.prototype.forEach.call(document.querySelectorAll('.cmp-cb'), function (cb) {
       cb.addEventListener('change', function () {
@@ -521,7 +548,7 @@
     if (axis === 'relative') {
       // 对齐起点：x = 第 N 个交易日；各曲线按自身下标对齐（短曲线点少，自然在前段对齐）
       var maxLen = series.reduce(function (m, s) { return Math.max(m, s.values.length); }, 0);
-      labels = []; for (var i = 0; i < maxLen; i++) { labels.push('D' + i); }
+      labels = []; for (var i = 0; i < maxLen; i++) { labels.push(i === 0 ? '起点' : '第' + i + '日'); }
       datasets = series.map(function (s, k) {
         return { label: s.label, data: s.values, borderColor: CURVE_PALETTE[k % CURVE_PALETTE.length],
           pointRadius: 0, borderWidth: 1.6 };
@@ -547,7 +574,8 @@
 
   function axisSwitchHtml() {
     return ['calendar', 'relative'].map(function (a) {
-      return '<button data-axis="' + a + '" class="' + (state.cmp_axis === a ? 'active' : '') + '">' +
+      var on = state.cmp_axis === a;
+      return '<button type="button" data-axis="' + a + '" aria-pressed="' + on + '" class="' + (on ? 'active' : '') + '">' +
         (a === 'calendar' ? '日历轴' : '对齐起点') + '</button>';
     }).join('');
   }
@@ -559,7 +587,9 @@
         state.cmp_axis = b.dataset.axis;
         destroyCharts();
         Array.prototype.forEach.call(document.querySelectorAll('#axis-sw button'), function (x) {
-          x.className = x.dataset.axis === state.cmp_axis ? 'active' : '';
+          var on = x.dataset.axis === state.cmp_axis;
+          x.className = on ? 'active' : '';
+          x.setAttribute('aria-pressed', on);
         });
         drawMultiCurve(canvasId, cmpItems, state.cmp_axis);
       });
@@ -581,14 +611,15 @@
   }
 
   function drawStrategyDetail(d, curves) {
+    var anyLow = d.runs.some(function (r) { return r.low_confidence; });
     var runRows = d.runs.map(function (r) {
       return '<tr><td><a href="#/session/' + esc(r.session_id) + '">' + esc(r.session_id.slice(0, 8)) + '…</a></td>' +
         '<td>' + esc(r.start_date || '') + ' ~ ' + esc(r.end_date || '') + '</td>' +
         '<td>' + esc(r.status) + '</td>' +
-        '<td class="' + cls(r.total_return) + '">' + pct(r.total_return) + '</td>' +
-        '<td' + lowConfAttr(r.low_confidence, 'annual_return') + '>' + pct(r.annual_return) + '</td>' +
-        '<td' + lowConfAttr(r.low_confidence, 'sharpe') + '>' + num(r.sharpe) + '</td>' +
-        '<td>' + pct(r.max_drawdown) + '</td>' +
+        fmtStratCell('total_return', r.total_return, r.low_confidence) +
+        fmtStratCell('annual_return', r.annual_return, r.low_confidence) +
+        fmtStratCell('sharpe', r.sharpe, r.low_confidence) +
+        fmtStratCell('max_drawdown', r.max_drawdown, r.low_confidence) +
         '<td>' + esc(String(r.created_at || '').slice(0, 16).replace('T', ' ')) + '</td></tr>';
     }).join('');
     app.innerHTML =
@@ -596,14 +627,19 @@
       ' · 账户 ' + esc(d.accounts.join(', ')) +
       ' · 最新一次 <a href="#/session/' + esc(d.latest.session_id) + '">' + esc(d.latest.session_id.slice(0, 8)) +
       '…</a>（' + pct(d.latest.total_return) + '）· 历史最优 <a href="#/session/' + esc(d.best.session_id) + '">' +
-      esc(d.best.session_id.slice(0, 8)) + '…</a>（' + pct(d.best.total_return) + '）</p></div>' +
-      '<div class="section"><h2>历次回测</h2><table class="kpi-table"><thead><tr><th>会话</th><th>区间</th>' +
-      '<th>状态</th><th>总收益</th><th>年化</th><th>夏普</th><th>最大回撤</th><th>发起时间</th></tr></thead><tbody>' +
+      esc(d.best.session_id.slice(0, 8)) + '…</a>（' + pct(d.best.total_return) + '）' +
+      (anyLow ? ' · <span class="lowconf">*</span> 样本&lt;60 交易日，风险指标仅供参考' : '') + '</p></div>' +
+      '<div class="section"><h2>历次回测</h2><table class="kpi-table"><caption class="sr-only">' + esc(d.strategy_id) +
+      ' 历次回测</caption><thead><tr><th scope="col">会话</th><th scope="col">区间</th>' +
+      '<th scope="col">状态</th><th scope="col">总收益</th><th scope="col">年化</th><th scope="col">夏普</th>' +
+      '<th scope="col">最大回撤</th><th scope="col">发起时间</th></tr></thead><tbody>' +
       runRows + '</tbody></table></div>' +
       '<div class="section"><h2>净值叠加 <span class="gran-switch" id="axis-sw">' + axisSwitchHtml() + '</span></h2>' +
-      '<canvas id="sd-c" height="90"></canvas></div>';
-    cmpItems = curves.map(function (c) {
-      return { label: c.run.session_id.slice(0, 8), dates: c.eq.dates, values: c.eq.strategy };
+      '<canvas id="sd-c" height="90" role="img" aria-label="' + esc(d.strategy_id) + ' 的 ' + d.n_runs +
+      ' 次回测净值叠加曲线，数据见上方历次回测表"></canvas></div>';
+    cmpItems = curves.map(function (c, i) {
+      return { label: '#' + (i + 1) + ' ' + String(c.run.start_date || '').slice(5) + '~' + String(c.run.end_date || '').slice(5),
+               dates: c.eq.dates, values: c.eq.strategy };
     });
     drawMultiCurve('sd-c', cmpItems, state.cmp_axis);
     bindAxisSwitch('sd-c');
@@ -634,17 +670,20 @@
                      ['最大回撤', 'max_drawdown'], ['波动率', 'volatility']];
 
   function drawCompare(items) {
-    var head = '<tr><th>指标</th>' + items.map(function (it) { return '<th>' + esc(it.id) + '</th>'; }).join('') + '</tr>';
+    var anyLow = items.some(function (it) { return it.m.low_confidence; });
+    var head = '<tr><th scope="col">指标</th>' + items.map(function (it) { return '<th scope="col">' + esc(it.id) + '</th>'; }).join('') + '</tr>';
     var mbody = CMP_METRICS.map(function (mk) {
-      return '<tr><td>' + mk[0] + '</td>' + items.map(function (it) {
+      return '<tr><th scope="row">' + mk[0] + '</th>' + items.map(function (it) {
         return fmtStratCell(mk[1], it.m.strategy[mk[1]], it.m.low_confidence);
       }).join('') + '</tr>';
     }).join('');
     app.innerHTML =
       '<div class="section"><h2>多策略净值叠加 <span class="gran-switch" id="axis-sw">' + axisSwitchHtml() + '</span></h2>' +
-      '<canvas id="cmp-c" height="90"></canvas></div>' +
+      '<p class="note">各策略取其『最新一次』回测净值，起点归 1.0 叠加。</p>' +
+      '<canvas id="cmp-c" height="90" role="img" aria-label="' + items.length + ' 个策略最新一次回测净值叠加，数据见下方指标并排表"></canvas></div>' +
       '<div class="section"><h2>指标并排</h2><table class="kpi-table"><thead>' + head +
-      '</thead><tbody>' + mbody + '</tbody></table></div>';
+      '</thead><tbody>' + mbody + '</tbody></table>' +
+      (anyLow ? '<p class="note"><span class="lowconf">*</span> = 样本&lt;60 交易日，风险指标仅供参考。</p>' : '') + '</div>';
     cmpItems = items.map(function (it) { return { label: it.id, dates: it.eq.dates, values: it.eq.strategy }; });
     drawMultiCurve('cmp-c', cmpItems, state.cmp_axis);
     bindAxisSwitch('cmp-c');
