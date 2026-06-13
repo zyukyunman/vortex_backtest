@@ -5,13 +5,19 @@
 **按容差判定合理**，并对"窗口内除权(ex_date)的标的"标注为**预期 qfq 分红差**——区分
 "已知口径差"与"真 bug"。
 
-用法::
+用法（成交来源二选一）::
 
+    # 会话式回测（当前形态）：指向会话产物目录，从 trades.jsonl 读成交
     python scripts/reconcile_statement.py \
-        --summary  <回测产物 account_summary.json> \
-        --statement <券商对账单.csv> \
-        [--events-dir <vortex_data/workspace/data/events>] \
-        [--tolerance 0.005] [--out diff.csv]
+        --session-dir <VORTEX_STATE/reports/sessions/<session_id>> \
+        --statement <券商对账单.csv> [--tolerance 0.005] [--out diff.csv]
+
+    # 旧形态兼容：从一次性 summary.json（含 trades）读
+    python scripts/reconcile_statement.py \
+        --summary <account_summary.json> --statement <券商对账单.csv>
+
+    可选 [--events-dir <vortex_data dividend 目录>] 标注窗口内除权标的（本地直读 qfq 口径的预期分红差；
+    网关路已 N8 入账分红则无此差）。
 
 对账单 CSV 期望列（大小写不敏感，常见别名自动映射；缺列则跳过该项对比）：
     date(交易日) symbol(代码,如600000.SH) side(buy/sell 或 1/2) quantity(成交量) price(成交均价)
@@ -106,7 +112,8 @@ def _aggregate(df: pd.DataFrame, *, source: str) -> pd.DataFrame:
     return df.groupby(["date", "symbol", "side"], as_index=False)[["qty", "notional", "fee"]].sum()
 
 
-def _trades_from_summary(summary: dict) -> pd.DataFrame:
+def _rows_to_trades(trades: list[dict]) -> pd.DataFrame:
+    """成交行列表（旧 summary["trades"] 或会话 trades.jsonl 同一行格式）→ 聚合表。"""
     rows = [
         {
             "date": _norm_date(t.get("trade_date")),
@@ -116,9 +123,23 @@ def _trades_from_summary(summary: dict) -> pd.DataFrame:
             "amount": t.get("amount", 0.0),
             "fee": float(t.get("commission", 0.0)) + float(t.get("stamp_tax", 0.0)) + float(t.get("transfer_fee", 0.0)),
         }
-        for t in summary.get("trades", [])
+        for t in trades
     ]
     return _aggregate(pd.DataFrame(rows), source="backtest")
+
+
+def _trades_from_summary(summary: dict) -> pd.DataFrame:
+    """旧形态：一次性 summary.json 内嵌 trades 列表。"""
+    return _rows_to_trades(summary.get("trades", []))
+
+
+def _trades_from_session_dir(session_dir: Path) -> pd.DataFrame:
+    """会话式形态：从 <session_dir>/trades.jsonl 逐行读成交（同 trades 行格式）。"""
+    path = session_dir / "trades.jsonl"
+    if not path.exists():
+        raise SystemExit(f"会话产物缺 trades.jsonl：{path}")
+    trades = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return _rows_to_trades(trades)
 
 
 def _ex_div_symbols(events_dir: Path, start: str, end: str) -> set[str]:
@@ -146,15 +167,19 @@ def _ex_div_symbols(events_dir: Path, start: str, end: str) -> set[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="券商对账单 ↔ 回测对照（容差，qfq 口径）")
-    ap.add_argument("--summary", required=True, type=Path, help="回测 account_summary.json")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--session-dir", type=Path, help="会话产物目录（含 trades.jsonl），当前形态")
+    src.add_argument("--summary", type=Path, help="旧形态：account_summary.json（内嵌 trades）")
     ap.add_argument("--statement", required=True, type=Path, help="券商对账单 CSV")
-    ap.add_argument("--events-dir", type=Path, default=None, help="vortex_data events 目录（标注分红差）")
+    ap.add_argument("--events-dir", type=Path, default=None, help="vortex_data dividend 目录（标注分红差）")
     ap.add_argument("--tolerance", type=float, default=0.005, help="相对误差容差（默认 0.5%）")
     ap.add_argument("--out", type=Path, default=None, help="差异明细输出 CSV")
     args = ap.parse_args(argv)
 
-    summary = json.loads(args.summary.read_text(encoding="utf-8"))
-    bt = _trades_from_summary(summary)
+    if args.session_dir is not None:
+        bt = _trades_from_session_dir(args.session_dir)
+    else:
+        bt = _trades_from_summary(json.loads(args.summary.read_text(encoding="utf-8")))
     stmt = _aggregate(pd.read_csv(args.statement), source="statement")
 
     merged = bt.merge(stmt, on=["date", "symbol", "side"], how="outer", suffixes=("_bt", "_stmt"), indicator=True)
